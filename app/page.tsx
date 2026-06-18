@@ -1,5 +1,6 @@
 import { getServiceClient } from '@/lib/supabase';
 import { USER_NAME } from '@/lib/config';
+import HearAWord from './components/HearAWord';
 
 export const dynamic = 'force-dynamic';
 
@@ -87,6 +88,8 @@ export default async function Home() {
         )}
         <a href="/lesson?mode=learn"><button className="btn btn-plain">Learn something new →</button></a>
       </div>
+
+      <HearAWord />
 
       {lastLesson.length > 0 && (
         <div className="card">

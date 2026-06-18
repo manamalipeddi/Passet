@@ -13,7 +13,7 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
   // Words
   let wq = supabase
     .from('user_progress')
-    .select('word_id, status, next_review_date, times_correct, times_wrong, words(id, lemma, pos, gender)');
+    .select('word_id, status, next_review_date, times_correct, times_wrong, words(id, lemma, pos, gender, source)');
   if (filter !== 'all') wq = wq.eq('status', filter);
   const { data: wordRows } = await wq;
   const words = (wordRows ?? [])
@@ -102,6 +102,11 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
                   <span className="muted">
                     {w.pos}{w.gender ? `, ${w.gender}` : ''}
                   </span>
+                  {w.source === 'user_added' && (
+                    <span style={{ display: 'inline-block', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', padding: '1px 5px', borderRadius: 4, border: '1.5px solid var(--mustard)', background: '#FFF7E6', marginLeft: 6, verticalAlign: 'middle' }}>
+                      heard
+                    </span>
+                  )}
                 </div>
                 <span className={`status-pill ${r.status}`}>{r.status === 'known' ? 'mastered' : r.status}</span>
                 <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>due {due}</span>

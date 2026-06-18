@@ -39,11 +39,17 @@ export async function POST(req: Request) {
 
   // ── DAILY ────────────────────────────────────────────────────────────────
   if (mode === 'daily' || mode === 'extra') {
-    const dueQ = supabase.from('user_progress').select('word_id, words(*)').order('next_review_date').limit(5);
-    const { data: dueProgress } = mode === 'extra'
+    const dueQ = supabase.from('user_progress').select('word_id, words(*)').order('next_review_date').limit(15);
+    const { data: rawDue } = mode === 'extra'
       ? await dueQ
       : await dueQ.lte('next_review_date', today);
-    const existingIds = (dueProgress ?? []).map((p: any) => p.word_id);
+    // Curriculum words take priority; sort is stable so within-source order (by date) is preserved
+    const dueProgress = (rawDue ?? [])
+      .sort((a: any, b: any) =>
+        (a.words?.source === 'curriculum' ? 0 : 1) - (b.words?.source === 'curriculum' ? 0 : 1)
+      )
+      .slice(0, 5);
+    const existingIds = dueProgress.map((p: any) => p.word_id);
 
     let newWords: any[] = [];
     if (mode === 'daily') {
@@ -98,7 +104,7 @@ export async function POST(req: Request) {
     // Next word batch by rank
     const { data: startedW } = await supabase.from('user_progress').select('word_id');
     const startedWIds = (startedW ?? []).map((p: any) => p.word_id);
-    let wq = supabase.from('words').select('*').order('rank').limit(3 + startedWIds.length);
+    let wq = supabase.from('words').select('*').eq('source', 'curriculum').order('rank').limit(3 + startedWIds.length);
     if (startedWIds.length) wq = wq.not('id', 'in', `(${startedWIds.join(',')})`);
     const { data: wCands } = await wq;
     const newWords = (wCands ?? []).filter((w: any) => !startedWIds.includes(w.id)).slice(0, 3);
