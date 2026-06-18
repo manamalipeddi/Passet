@@ -2,8 +2,23 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 
+type Mode = 'daily' | 'extra' | 'learn' | 'targeted';
 type Vocab = { id: string; lemma: string; pos: string; gender: string | null; forms: any; example_sv: string; example_en: string };
 type Exercise = { prompt: string; reference: string; direction: 'en_to_sv' | 'sv_to_en'; sentence_id?: string };
+
+const LOADING_MSG: Record<Mode, string> = {
+  daily:    "Putting today's words together…",
+  extra:    'Pulling a practice set together…',
+  learn:    'Loading next lesson in the curriculum…',
+  targeted: 'Building targeted session…',
+};
+
+const STAGE_TAG: Record<Mode, string> = {
+  daily:    "today's focus",
+  extra:    "practice",
+  learn:    'new material',
+  targeted: 'targeted practice',
+};
 
 export default function Lesson() {
   return (
@@ -14,40 +29,44 @@ export default function Lesson() {
 }
 
 function LessonInner() {
-  const params = useSearchParams();
-  const mode = params.get('mode') === 'extra' ? 'extra' : 'daily';
+  const params  = useSearchParams();
+  const rawMode = params.get('mode') ?? 'daily';
+  const mode: Mode = (['daily', 'extra', 'learn', 'targeted'] as const).includes(rawMode as Mode)
+    ? (rawMode as Mode) : 'daily';
+  const wordId   = params.get('wordId')    ?? undefined;
+  const grammarId = params.get('grammarId') ?? undefined;
 
-  const [stage, setStage] = useState<'loading' | 'vocab' | 'exercise' | 'done' | 'error'>('loading');
-  const [vocab, setVocab] = useState<Vocab[]>([]);
-  const [grammarPoint, setGrammarPoint] = useState<any>(null);
-  const [exercises, setExercises] = useState<Exercise[]>([]);
-  const [idx, setIdx] = useState(0);
-  const [answer, setAnswer] = useState('');
+  const [stage, setStage]       = useState<'loading' | 'vocab' | 'exercise' | 'done' | 'error'>('loading');
+  const [vocab, setVocab]       = useState<Vocab[]>([]);
+  const [grammarPoint, setGP]   = useState<any>(null);
+  const [exercises, setEx]      = useState<Exercise[]>([]);
+  const [idx, setIdx]           = useState(0);
+  const [answer, setAnswer]     = useState('');
   const [feedback, setFeedback] = useState<any>(null);
   const [checking, setChecking] = useState(false);
-  const [streak, setStreak] = useState<number | null>(null);
-  const [alreadyDone, setAlreadyDone] = useState(false);
+  const [streak, setStreak]     = useState<number | null>(null);
+  const [alreadyDone, setDone]  = useState(false);
 
   useEffect(() => {
     fetch('/api/lesson/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify({ mode, wordId, grammarId }),
     })
       .then((r) => r.json())
       .then((data) => {
         if (data.error) { setStage('error'); return; }
         setVocab(data.vocab);
-        setGrammarPoint(data.grammarPoint);
+        setGP(data.grammarPoint);
         const ex: Exercise[] = [
-          ...data.exercises.en_to_sv.map((e: any) => ({ ...e, direction: 'en_to_sv' as const, sentence_id: e.sentence_id })),
-          ...data.exercises.sv_to_en.map((e: any) => ({ ...e, direction: 'sv_to_en' as const, sentence_id: e.sentence_id })),
+          ...data.exercises.en_to_sv.map((e: any) => ({ ...e, direction: 'en_to_sv' as const })),
+          ...data.exercises.sv_to_en.map((e: any) => ({ ...e, direction: 'sv_to_en' as const })),
         ];
-        setExercises(ex);
+        setEx(ex);
         setStage('vocab');
       })
       .catch(() => setStage('error'));
-  }, [mode]);
+  }, [mode, wordId, grammarId]);
 
   async function submitAnswer() {
     setChecking(true);
@@ -56,17 +75,16 @@ function LessonInner() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        direction: current.direction,
-        prompt: current.prompt,
-        reference: current.reference,
-        userAnswer: answer,
-        wordIds: vocab.map((v) => v.id),
+        direction:      current.direction,
+        prompt:         current.prompt,
+        reference:      current.reference,
+        userAnswer:     answer,
+        wordIds:        vocab.map((v) => v.id),
         grammarPointId: grammarPoint?.id,
-        grammarTitle: grammarPoint?.title,
+        grammarTitle:   grammarPoint?.title,
       }),
     });
-    const data = await res.json();
-    setFeedback(data);
+    setFeedback(await res.json());
     setChecking(false);
   }
 
@@ -90,26 +108,27 @@ function LessonInner() {
   }
 
   async function finish() {
-    const res = await fetch('/api/lesson/complete', { method: 'POST' });
+    const res  = await fetch('/api/lesson/complete', { method: 'POST' });
     const data = await res.json();
     setStreak(data.streak);
-    setAlreadyDone(!!data.already_done);
+    setDone(!!data.already_done);
     setStage('done');
   }
 
-  if (stage === 'loading') return <div className="wrap"><div className="card">Putting today's words together…</div></div>;
-  if (stage === 'error') return <div className="wrap"><div className="card">Couldn't reach the tutor. Check your connection and try again.</div></div>;
+  if (stage === 'loading') return <div className="wrap"><div className="card">{LOADING_MSG[mode]}</div></div>;
+  if (stage === 'error')   return <div className="wrap"><div className="card">Couldn't reach the tutor. Check your connection and try again.</div></div>;
 
   if (stage === 'vocab') {
     return (
       <div className="wrap">
-        <span className="tag">today's focus</span>
-        <h1 style={{ marginTop: 6 }}>{grammarPoint?.title}</h1>
+        <span className="tag">{STAGE_TAG[mode]}</span>
+        <h1 style={{ marginTop: 6 }}>{grammarPoint?.title ?? (mode === 'targeted' ? 'Targeted practice' : 'Vocabulary')}</h1>
         <p className="muted">{grammarPoint?.description}</p>
         <div className="card">
           {vocab.map((w) => (
             <div className="vocab-item" key={w.id}>
-              <strong>{w.lemma}</strong> <span className="muted">({w.pos}{w.gender ? `, ${w.gender}` : ''})</span>
+              <strong>{w.lemma}</strong>{' '}
+              <span className="muted">({w.pos}{w.gender ? `, ${w.gender}` : ''})</span>
               <div className="muted">{w.example_sv} — {w.example_en}</div>
             </div>
           ))}
@@ -143,9 +162,9 @@ function LessonInner() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
                 <button className="btn btn-primary" style={{ flex: 1 }} onClick={next}>
-                  {idx + 1 < exercises.length ? 'Next' : 'Finish today'}
+                  {idx + 1 < exercises.length ? 'Next' : (mode === 'daily' ? 'Finish today' : 'Finish')}
                 </button>
-                {exercises[idx]?.sentence_id && (
+                {current.sentence_id && (
                   <button className="btn-skip" onClick={excludeAndNext} title="Don't show this sentence again">
                     🙄 skip this one
                   </button>
@@ -158,14 +177,30 @@ function LessonInner() {
     );
   }
 
+  // Done stage
+  const doneTag = mode === 'learn' ? 'new material added'
+    : mode === 'targeted' ? 'targeted session'
+    : (mode === 'extra' || alreadyDone) ? 'bonus round'
+    : 'done for today';
+
+  const doneHead = mode === 'learn' ? 'Added to your curriculum.'
+    : mode === 'targeted' ? 'Targeted practice done. 🎯'
+    : (mode === 'extra' || alreadyDone) ? 'Nice, extra reps in the bank.'
+    : "Snyggt! Today's paus is done.";
+
   return (
     <div className="wrap">
       <div className="card" style={{ textAlign: 'center' }}>
-        <span className="tag">{mode === 'extra' || alreadyDone ? 'bonus round' : 'done for today'}</span>
-        <h2 style={{ marginTop: 10 }}>{mode === 'extra' || alreadyDone ? 'Nice, extra reps in the bank.' : 'Snyggt! Today\'s paus is done.'}</h2>
-        <p className="muted">🔥 {streak} day{streak === 1 ? '' : 's'} running.</p>
+        <span className="tag">{doneTag}</span>
+        <h2 style={{ marginTop: 10 }}>{doneHead}</h2>
+        {streak !== null && <p className="muted">🔥 {streak} day{streak === 1 ? '' : 's'} running.</p>}
         <a href="/"><button className="btn btn-plain" style={{ marginTop: 12 }}>Back to dashboard</button></a>
-        {mode !== 'extra' && (
+        {mode === 'learn' && (
+          <a href="/lesson?mode=learn">
+            <button className="btn btn-secondary" style={{ marginTop: 10 }}>Learn more new material</button>
+          </a>
+        )}
+        {mode === 'daily' && (
           <a href="/lesson?mode=extra">
             <button className="btn btn-secondary" style={{ marginTop: 10 }}>Got more time? Practice more</button>
           </a>
