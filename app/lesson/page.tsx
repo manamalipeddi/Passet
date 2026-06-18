@@ -158,7 +158,24 @@ function LessonInner() {
             <>
               <div className={`feedback ${feedback.correct ? 'ok' : 'fix'}`}>
                 <strong>{feedback.correct ? 'Looks right.' : 'Almost there.'}</strong> {feedback.feedback}
-                {!feedback.correct && <div style={{ marginTop: 6, fontStyle: 'italic' }}>{feedback.corrected}</div>}
+                {!feedback.correct && (
+                  <div style={{ marginTop: 12, borderTop: '1.5px dashed var(--ink)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-muted)', marginBottom: 2 }}>You wrote</div>
+                      <div style={{ fontStyle: 'italic' }}>{answer}</div>
+                    </div>
+                    {feedback.user_answer_translation && current.direction === 'en_to_sv' && (
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-muted)', marginBottom: 2 }}>Your answer means</div>
+                        <div>{feedback.user_answer_translation}</div>
+                      </div>
+                    )}
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-muted)', marginBottom: 2 }}>Correct</div>
+                      <div style={{ fontWeight: 700 }}>{feedback.corrected}</div>
+                    </div>
+                  </div>
+                )}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
                 <button className="btn btn-primary" style={{ flex: 1 }} onClick={next}>

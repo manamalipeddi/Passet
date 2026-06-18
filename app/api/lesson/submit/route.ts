@@ -13,7 +13,7 @@ The learner wrote: "${userAnswer}".
 The grammar point being practiced is: "${grammarTitle || 'general'}".
 
 Judge their answer on meaning and correctness, not just an exact string match against the reference (other valid phrasings are fine). Return ONLY valid JSON, no markdown, no extra text:
-{"correct": true or false, "feedback": "one or two encouraging sentences explaining what was right or wrong, tied to the grammar point where relevant", "corrected": "a corrected or improved version of their answer"}`;
+{"correct": true or false, "feedback": "one or two encouraging sentences explaining what was right or wrong, tied to the grammar point where relevant", "corrected": "a corrected or improved version of their answer", "user_answer_translation": "only when direction is en_to_sv AND the answer is incorrect: a plain English gloss of what the learner's Swedish actually means, word-for-word if needed, so they can see what their words said vs. what was intended — otherwise null"}`;
 
   let result;
   try {
