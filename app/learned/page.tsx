@@ -10,17 +10,22 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
 
   const supabase = getServiceClient();
 
-  // Words
+  // Words — fetch user_added IDs separately so filtering never depends on
+  // the PostgREST join returning the source column (schema cache can lag).
   let wq = supabase
     .from('user_progress')
-    .select('word_id, status, next_review_date, times_correct, times_wrong, words(id, lemma, pos, gender, source)');
+    .select('word_id, status, next_review_date, times_correct, times_wrong, words(id, lemma, pos, gender)');
   if (filter !== 'all') wq = wq.eq('status', filter);
-  const { data: wordRows } = await wq;
+  const [{ data: wordRows }, { data: uaRows }] = await Promise.all([
+    wq,
+    supabase.from('words').select('id').eq('source', 'user_added'),
+  ]);
+  const heardIds = new Set((uaRows ?? []).map((w: any) => w.id));
   const allWords = (wordRows ?? [])
     .filter((r: any) => r.words)
     .sort((a: any, b: any) => a.words.lemma.localeCompare(b.words.lemma, 'sv'));
-  const words      = allWords.filter((r: any) => r.words.source !== 'user_added');
-  const heardWords = allWords.filter((r: any) => r.words.source === 'user_added');
+  const words      = allWords.filter((r: any) => !heardIds.has(r.word_id));
+  const heardWords = allWords.filter((r: any) =>  heardIds.has(r.word_id));
 
   // Grammar
   const { data: gpRows } = await supabase
