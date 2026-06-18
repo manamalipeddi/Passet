@@ -62,31 +62,47 @@ export default async function Home() {
         </div>
       </div>
 
-      <div className="card">
-        <span className="tag">today</span>
-        <div style={{ marginTop: 4 }}>
-          <a href="/lesson"><button className="btn btn-primary">Start today's paus</button></a>
-          <div style={{ height: 10 }} />
-          <a href="/lesson?mode=extra"><button className="btn btn-secondary">Practice more (no new words)</button></a>
-        </div>
-      </div>
-
-      <div className="card">
-        <span className="tag" style={{ background: 'var(--green)', color: '#fff' }}>learn</span>
+      {/* Hero — learn section */}
+      <div style={{
+        background: 'var(--ink)',
+        border: '3px solid var(--ink)',
+        borderRadius: 16,
+        padding: '26px 24px',
+        marginTop: 18,
+        boxShadow: '7px 7px 0 var(--mustard)',
+      }}>
+        <span className="tag" style={{ background: 'var(--mustard)', color: 'var(--ink)' }}>learn</span>
         {nextGrammar ? (
           <>
-            <p style={{ margin: '10px 0 4px', fontWeight: 600 }}>Next up: {nextGrammar.title}</p>
-            <p className="muted" style={{ marginBottom: 12 }}>
+            <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
+              Next up: {nextGrammar.title}
+            </p>
+            <p style={{ margin: '0 0 22px', fontSize: 12, color: 'rgba(250,243,231,0.5)' }}>
               <span className={`cefr-tag cefr-${nextGrammar.cefr_level}`}>{nextGrammar.cefr_level}</span>
               {' '}· grammar point #{nextGrammar.sequence_order}
             </p>
           </>
         ) : (
-          <p className="muted" style={{ margin: '10px 0 12px' }}>
+          <p style={{ margin: '14px 0 22px', color: 'rgba(250,243,231,0.55)', fontSize: 14 }}>
             {allDone ? 'All content introduced — keep practicing!' : 'New words to learn'}
           </p>
         )}
-        <a href="/lesson?mode=learn"><button className="btn btn-plain">Learn something new →</button></a>
+        <a href="/lesson?mode=learn">
+          <button className="btn btn-secondary" style={{ boxShadow: '4px 4px 0 rgba(250,243,231,0.15)' }}>
+            Learn something new →
+          </button>
+        </a>
+        <div style={{ height: 10 }} />
+        <a href="/lesson?mode=extra">
+          <button className="btn" style={{
+            background: 'transparent',
+            color: '#FAF3E7',
+            border: '3px solid rgba(250,243,231,0.25)',
+            boxShadow: '4px 4px 0 rgba(250,243,231,0.06)',
+          }}>
+            Practice more (no new words)
+          </button>
+        </a>
       </div>
 
       <HearAWord />
