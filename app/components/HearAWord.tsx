@@ -30,10 +30,12 @@ export default function HearAWord() {
 
   async function handleConfirm() {
     try {
+      // Fast-track path: word already in DB, send only the word_id
+      const payload = preview.word_id ? { word_id: preview.word_id } : preview;
       const res  = await fetch('/api/words/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(preview),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (data.error) { setStage('error'); return; }
@@ -79,8 +81,7 @@ export default function HearAWord() {
           <div style={{ marginBottom: 6 }}>
             <strong style={{ fontSize: 16 }}>{preview.lemma}</strong>{' '}
             <span className="muted">({preview.pos}{preview.gender ? `, ${preview.gender}` : ''})</span>
-            {' — '}
-            <span>{preview.definition}</span>
+            {preview.definition && <>{' — '}<span>{preview.definition}</span></>}
           </div>
           {preview.example_sv && (
             <p className="muted" style={{ margin: '2px 0 14px', fontStyle: 'italic' }}>
@@ -89,7 +90,7 @@ export default function HearAWord() {
           )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleConfirm}>
-              Add to my list
+              {preview.word_id ? 'Add to my heard list →' : 'Add to my list'}
             </button>
             <button className="btn btn-plain" style={{ flex: 1 }} onClick={reset}>
               Not this

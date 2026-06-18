@@ -28,19 +28,19 @@ Return ONLY valid JSON, no markdown:
   "definition": "concise English definition, 2-6 words"
 }`;
 
-  let preview: any;
+  let claudeData: any;
   try {
-    preview = JSON.parse(await callClaude(prompt));
+    claudeData = JSON.parse(await callClaude(prompt));
   } catch {
     return NextResponse.json({ error: 'normalization_failed' }, { status: 502 });
   }
 
-  if (!preview?.lemma || !preview?.pos) {
+  if (!claudeData?.lemma || !claudeData?.pos) {
     return NextResponse.json({ error: 'invalid_word_data' }, { status: 422 });
   }
 
-  const normalizedLemma = preview.lemma.toLowerCase().trim();
-  preview.lemma = normalizedLemma;
+  const normalizedLemma = claudeData.lemma.toLowerCase().trim();
+  claudeData.lemma = normalizedLemma;
 
   const supabase = getServiceClient();
   const { data: existing } = await supabase
@@ -50,8 +50,35 @@ Return ONLY valid JSON, no markdown:
     .maybeSingle();
 
   if (existing) {
-    return NextResponse.json({ already_exists: true, word: existing });
+    // Check if it's already in the active practice queue
+    const { data: progress } = await supabase
+      .from('user_progress')
+      .select('id')
+      .eq('word_id', existing.id)
+      .maybeSingle();
+
+    if (progress) {
+      // Already being actively practiced — nothing to do
+      return NextResponse.json({ already_exists: true, word: existing });
+    }
+
+    // In the word bank but not yet in the queue — offer to fast-track it.
+    // Surface Claude's definition alongside the DB's example sentence.
+    return NextResponse.json({
+      already_exists: false,
+      preview: {
+        word_id:    existing.id,           // signals fast-track path in confirm
+        lemma:      existing.lemma,
+        pos:        existing.pos,
+        gender:     existing.gender,
+        example_sv: existing.example_sv,
+        example_en: existing.example_en,
+        definition: claudeData.definition,
+        forms:      claudeData.forms,      // kept for completeness, not re-inserted
+      },
+    });
   }
 
-  return NextResponse.json({ already_exists: false, preview });
+  // Brand new word
+  return NextResponse.json({ already_exists: false, preview: claudeData });
 }
