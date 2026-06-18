@@ -16,9 +16,11 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
     .select('word_id, status, next_review_date, times_correct, times_wrong, words(id, lemma, pos, gender, source)');
   if (filter !== 'all') wq = wq.eq('status', filter);
   const { data: wordRows } = await wq;
-  const words = (wordRows ?? [])
+  const allWords = (wordRows ?? [])
     .filter((r: any) => r.words)
     .sort((a: any, b: any) => a.words.lemma.localeCompare(b.words.lemma, 'sv'));
+  const words      = allWords.filter((r: any) => r.words.source !== 'user_added');
+  const heardWords = allWords.filter((r: any) => r.words.source === 'user_added');
 
   // Grammar
   const { data: gpRows } = await supabase
@@ -38,7 +40,7 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
     <div className="wrap">
       <span className="tag">learned</span>
       <h1 style={{ marginTop: 6 }}>What you know</h1>
-      <p className="muted">{words.length} words · {grammar.length} grammar points introduced</p>
+      <p className="muted">{words.length} curriculum words · {heardWords.length} heard · {grammar.length} grammar points</p>
 
       {/* ── Grammar ──────────────────────────────────────────── */}
       <div className="card" style={{ marginTop: 24 }}>
@@ -90,36 +92,47 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
 
         <div style={{ marginTop: 12 }}>
           {words.length === 0 && <p className="muted">No words match this filter.</p>}
-          {words.map((r: any) => {
-            const w = r.words;
-            const due = r.next_review_date
-              ? new Date(r.next_review_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
-              : '—';
-            return (
-              <div key={r.word_id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1.5px dashed var(--line)' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ fontWeight: 700 }}>{w.lemma}</span>{' '}
-                  <span className="muted">
-                    {w.pos}{w.gender ? `, ${w.gender}` : ''}
-                  </span>
-                  {w.source === 'user_added' && (
-                    <span style={{ display: 'inline-block', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', padding: '1px 5px', borderRadius: 4, border: '1.5px solid var(--mustard)', background: '#FFF7E6', marginLeft: 6, verticalAlign: 'middle' }}>
-                      heard
-                    </span>
-                  )}
-                </div>
-                <span className={`status-pill ${r.status}`}>{r.status === 'known' ? 'mastered' : r.status}</span>
-                <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>due {due}</span>
-                <a href={`/lesson?mode=targeted&wordId=${w.id}`}>
-                  <button className="btn btn-plain" style={{ padding: '4px 10px', fontSize: 11, width: 'auto', boxShadow: '2px 2px 0 var(--ink)' }}>
-                    Practice
-                  </button>
-                </a>
-              </div>
-            );
-          })}
+          {words.map((r: any) => <WordRow key={r.word_id} r={r} />)}
         </div>
       </div>
+
+      {/* ── Words I've heard ─────────────────────────────────── */}
+      <div className="card" style={{ marginTop: 18 }}>
+        <span className="tag" style={{ background: '#FFF7E6' }}>words i've heard</span>
+        <div style={{ marginTop: 12 }}>
+          {heardWords.length === 0 ? (
+            <p className="muted">
+              {filter === 'all'
+                ? 'No heard words yet — use the dashboard to add words you encounter in real life.'
+                : 'No heard words match this filter.'}
+            </p>
+          ) : (
+            heardWords.map((r: any) => <WordRow key={r.word_id} r={r} />)
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WordRow({ r }: { r: any }) {
+  const w   = r.words;
+  const due = r.next_review_date
+    ? new Date(r.next_review_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+    : '—';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1.5px dashed var(--line)' }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ fontWeight: 700 }}>{w.lemma}</span>{' '}
+        <span className="muted">{w.pos}{w.gender ? `, ${w.gender}` : ''}</span>
+      </div>
+      <span className={`status-pill ${r.status}`}>{r.status === 'known' ? 'mastered' : r.status}</span>
+      <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>due {due}</span>
+      <a href={`/lesson?mode=targeted&wordId=${w.id}`}>
+        <button className="btn btn-plain" style={{ padding: '4px 10px', fontSize: 11, width: 'auto', boxShadow: '2px 2px 0 var(--ink)' }}>
+          Practice
+        </button>
+      </a>
     </div>
   );
 }
