@@ -3,7 +3,7 @@ import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 type Vocab = { id: string; lemma: string; pos: string; gender: string | null; forms: any; example_sv: string; example_en: string };
-type Exercise = { prompt: string; reference: string; direction: 'en_to_sv' | 'sv_to_en' };
+type Exercise = { prompt: string; reference: string; direction: 'en_to_sv' | 'sv_to_en'; sentence_id?: string };
 
 export default function Lesson() {
   return (
@@ -40,8 +40,8 @@ function LessonInner() {
         setVocab(data.vocab);
         setGrammarPoint(data.grammarPoint);
         const ex: Exercise[] = [
-          ...data.exercises.en_to_sv.map((e: any) => ({ ...e, direction: 'en_to_sv' as const })),
-          ...data.exercises.sv_to_en.map((e: any) => ({ ...e, direction: 'sv_to_en' as const })),
+          ...data.exercises.en_to_sv.map((e: any) => ({ ...e, direction: 'en_to_sv' as const, sentence_id: e.sentence_id })),
+          ...data.exercises.sv_to_en.map((e: any) => ({ ...e, direction: 'sv_to_en' as const, sentence_id: e.sentence_id })),
         ];
         setExercises(ex);
         setStage('vocab');
@@ -75,6 +75,18 @@ function LessonInner() {
     setAnswer('');
     if (idx + 1 < exercises.length) setIdx(idx + 1);
     else finish();
+  }
+
+  function excludeAndNext() {
+    const sid = exercises[idx]?.sentence_id;
+    if (sid) {
+      fetch('/api/lesson/exclude-sentence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sentence_id: sid }),
+      }).catch(() => {});
+    }
+    next();
   }
 
   async function finish() {
@@ -129,9 +141,16 @@ function LessonInner() {
                 <strong>{feedback.correct ? 'Looks right.' : 'Almost there.'}</strong> {feedback.feedback}
                 {!feedback.correct && <div style={{ marginTop: 6, fontStyle: 'italic' }}>{feedback.corrected}</div>}
               </div>
-              <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={next}>
-                {idx + 1 < exercises.length ? 'Next' : 'Finish today'}
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+                <button className="btn btn-primary" style={{ flex: 1 }} onClick={next}>
+                  {idx + 1 < exercises.length ? 'Next' : 'Finish today'}
+                </button>
+                {exercises[idx]?.sentence_id && (
+                  <button className="btn-skip" onClick={excludeAndNext} title="Don't show this sentence again">
+                    🙄 skip this one
+                  </button>
+                )}
+              </div>
             </>
           )}
         </div>
