@@ -64,8 +64,8 @@ export default async function Home() {
 
       {/* Hero — learn section */}
       <div style={{
-        background: 'var(--ink)',
-        border: '3px solid var(--ink)',
+        background: 'var(--green)',
+        border: '3px solid var(--green)',
         borderRadius: 16,
         padding: '26px 24px',
         marginTop: 18,
