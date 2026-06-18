@@ -1,6 +1,15 @@
 import { getServiceClient } from '@/lib/supabase';
-import { USER_NAME } from '@/lib/config';
 import HearAWord from './components/HearAWord';
+
+const GREETINGS = [
+  'Hej Manasa! Välkommen tillbaka.',
+  'Kul att se dig igen, Manasa!',
+  'Hej igen! Dags att öva lite svenska.',
+  'Välkommen tillbaka, Manasa!',
+  'Hej Manasa! Redo att lära dig mer?',
+  'Kul att du är tillbaka, Manasa!',
+  'God dag, Manasa! Ska vi öva?',
+];
 
 export const dynamic = 'force-dynamic';
 
@@ -38,18 +47,12 @@ export default async function Home() {
   const mistakes   = (recent ?? []).filter((a: any) => !a.is_correct).slice(0, 4);
   const touched    = (learning ?? 0) + (known ?? 0);
   const streak     = state?.current_streak ?? 0;
-  const allDone    = (grammarStarted ?? 0) >= (grammarTotal ?? 1) && touched >= (totalWords ?? 1);
-
-  const greeting =
-    streak === 0 ? `Hej ${USER_NAME}! Ready for paus number one?` :
-    streak >= 7  ? `Hej ${USER_NAME}! ${streak} days — you're properly on a roll.` :
-                   `Hej ${USER_NAME}! Good to see you back.`;
+  const allDone  = (grammarStarted ?? 0) >= (grammarTotal ?? 1) && touched >= (totalWords ?? 1);
+  const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
 
   return (
     <div className="wrap">
-      <div className="eyebrow">15 minutes, most days</div>
-      <h1>🇸🇪 Passet</h1>
-      <p className="muted" style={{ marginTop: 6 }}>{greeting}</p>
+      <h1 style={{ fontSize: 26, lineHeight: 1.3, margin: 0 }}>{greeting}</h1>
 
       <div className="row2" style={{ marginTop: 18 }}>
         <div className="stat">
