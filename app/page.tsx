@@ -1,33 +1,91 @@
 import { getServiceClient } from '@/lib/supabase';
-import Link from 'next/link';
+import { USER_NAME } from '@/lib/config';
 
 export const dynamic = 'force-dynamic';
 
 export default async function Home() {
   const supabase = getServiceClient();
+
   const { data: state } = await supabase.from('streak_state').select('*').eq('id', 1).single();
-  const { count: knownWords } = await supabase
-    .from('user_progress')
-    .select('*', { count: 'exact', head: true })
-    .eq('status', 'known');
+  const { count: learning } = await supabase.from('user_progress').select('*', { count: 'exact', head: true }).eq('status', 'learning');
+  const { count: known } = await supabase.from('user_progress').select('*', { count: 'exact', head: true }).eq('status', 'known');
   const { count: totalWords } = await supabase.from('words').select('*', { count: 'exact', head: true });
+  const { count: grammarStarted } = await supabase.from('user_grammar_progress').select('*', { count: 'exact', head: true });
+  const { count: grammarTotal } = await supabase.from('grammar_points').select('*', { count: 'exact', head: true });
+
+  const { data: recent } = await supabase
+    .from('attempts')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(8);
+
+  const lastLesson = (recent || []).slice().reverse();
+  const mistakes = (recent || []).filter((a: any) => !a.is_correct).slice(0, 4);
+  const touched = (learning ?? 0) + (known ?? 0);
+  const streak = state?.current_streak ?? 0;
+
+  const greeting =
+    streak === 0 ? `Hej ${USER_NAME}! Ready for paus number one?` :
+    streak >= 7 ? `Hej ${USER_NAME}! ${streak} days — you're properly on a roll.` :
+    `Hej ${USER_NAME}! Good to see you back.`;
 
   return (
     <div className="wrap">
-      <div className="muted" style={{ textTransform: 'uppercase', letterSpacing: '0.1em', fontSize: 11 }}>
-        15 minutes, most days
+      <div className="eyebrow">15 minutes, most days</div>
+      <h1>🇸🇪 Passet</h1>
+      <p className="muted" style={{ marginTop: 6 }}>{greeting}</p>
+
+      <div className="row2" style={{ marginTop: 18 }}>
+        <div className="stat">
+          <div className="num">{streak === 0 ? '—' : `🔥 ${streak}`}</div>
+          <div className="lbl">day streak</div>
+        </div>
+        <div className="stat">
+          <div className="num">{touched}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {totalWords ?? 0}</span></div>
+          <div className="lbl">words started · {known ?? 0} mastered</div>
+        </div>
       </div>
-      <h1>Passet</h1>
+
       <div className="card">
-        <div style={{ fontSize: 28, fontWeight: 700, color: '#E8A33D' }}>{state?.current_streak ?? 0}</div>
-        <div className="muted">day streak · {knownWords ?? 0} of {totalWords ?? 0} words known</div>
-        <Link href="/lesson">
-          <button className="btn btn-primary" style={{ marginTop: 18 }}>Start today's paus</button>
-        </Link>
-        <Link href="/lesson?mode=extra">
-          <button className="btn btn-secondary" style={{ marginTop: 10 }}>Practice more (won't add new words)</button>
-        </Link>
+        <span className="tag">today</span>
+        <div style={{ marginTop: 4 }}>
+          <a href="/lesson"><button className="btn btn-primary">Start today's paus</button></a>
+          <div style={{ height: 10 }} />
+          <a href="/lesson?mode=extra"><button className="btn btn-secondary">Practice more (no new words)</button></a>
+        </div>
       </div>
+
+      {lastLesson.length > 0 && (
+        <div className="card">
+          <span className="tag">last time</span>
+          <div style={{ marginTop: 10 }}>
+            {lastLesson.map((a: any) => (
+              <div className="vocab-item" key={a.id}>
+                <strong>{a.is_correct ? '✅' : '✏️'}</strong> {a.prompt_text}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {mistakes.length > 0 && (
+        <div className="card">
+          <span className="tag" style={{ background: 'var(--red)', color: '#fff' }}>worth a second look</span>
+          <div style={{ marginTop: 10 }}>
+            {mistakes.map((m: any) => (
+              <div className="vocab-item" key={m.id}>
+                <div className="muted">{m.prompt_text}</div>
+                <div style={{ fontWeight: 600 }}>{m.target_text}</div>
+                <div className="muted" style={{ marginTop: 4 }}>{m.explanation}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <p className="muted" style={{ marginTop: 20, textAlign: 'center' }}>
+        {grammarStarted ?? 0} of {grammarTotal ?? 0} grammar points underway
+      </p>
     </div>
   );
 }

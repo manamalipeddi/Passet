@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import Link from 'next/link';
 
 type Vocab = { id: string; lemma: string; pos: string; gender: string | null; forms: any; example_sv: string; example_en: string };
 type Exercise = { prompt: string; reference: string; direction: 'en_to_sv' | 'sv_to_en' };
@@ -92,7 +91,8 @@ function LessonInner() {
   if (stage === 'vocab') {
     return (
       <div className="wrap">
-        <h1>Today: {grammarPoint?.title}</h1>
+        <span className="tag">today's focus</span>
+        <h1 style={{ marginTop: 6 }}>{grammarPoint?.title}</h1>
         <p className="muted">{grammarPoint?.description}</p>
         <div className="card">
           {vocab.map((w) => (
@@ -102,7 +102,7 @@ function LessonInner() {
             </div>
           ))}
           <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={() => setStage('exercise')}>
-            Start the sentences
+            Start the sentences →
           </button>
         </div>
       </div>
@@ -113,7 +113,7 @@ function LessonInner() {
     const current = exercises[idx];
     return (
       <div className="wrap">
-        <div className="muted">{idx + 1} of {exercises.length}</div>
+        <span className="pill">{idx + 1} of {exercises.length}</span>
         <div className="card">
           <p>{current.direction === 'en_to_sv' ? 'Translate into Swedish:' : 'Translate into English:'}</p>
           <p style={{ fontSize: 18, fontWeight: 600 }}>{current.prompt}</p>
@@ -142,13 +142,14 @@ function LessonInner() {
   return (
     <div className="wrap">
       <div className="card" style={{ textAlign: 'center' }}>
-        <h2>{mode === 'extra' || alreadyDone ? 'Bonus round done.' : "Today's paus is done."}</h2>
-        <p className="muted">{streak} day{streak === 1 ? '' : 's'} running.</p>
-        <Link href="/"><button className="btn btn-secondary" style={{ marginTop: 12 }}>Back to dashboard</button></Link>
+        <span className="tag">{mode === 'extra' || alreadyDone ? 'bonus round' : 'done for today'}</span>
+        <h2 style={{ marginTop: 10 }}>{mode === 'extra' || alreadyDone ? 'Nice, extra reps in the bank.' : 'Snyggt! Today\'s paus is done.'}</h2>
+        <p className="muted">🔥 {streak} day{streak === 1 ? '' : 's'} running.</p>
+        <a href="/"><button className="btn btn-plain" style={{ marginTop: 12 }}>Back to dashboard</button></a>
         {mode !== 'extra' && (
-          <Link href="/lesson?mode=extra">
-            <button className="btn btn-primary" style={{ marginTop: 10 }}>Got more time? Practice more</button>
-          </Link>
+          <a href="/lesson?mode=extra">
+            <button className="btn btn-secondary" style={{ marginTop: 10 }}>Got more time? Practice more</button>
+          </a>
         )}
       </div>
     </div>
