@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 type Mode = 'daily' | 'extra' | 'learn' | 'targeted' | 'words' | 'grammar';
 type Vocab = { id: string; lemma: string; pos: string; gender: string | null; forms: any; example_sv: string; example_en: string };
 type Exercise = { prompt: string; reference: string; direction: 'en_to_sv' | 'sv_to_en'; sentence_id?: string };
+type CarryItem = { direction: 'en_to_sv' | 'sv_to_en'; prompt: string; reference: string; userAnswer: string; correct: boolean };
 
 const LOADING_MSG: Record<Mode, string> = {
   daily:    "Putting today's words together…",
@@ -40,7 +41,7 @@ function LessonInner() {
   const wordId   = params.get('wordId')    ?? undefined;
   const grammarId = params.get('grammarId') ?? undefined;
 
-  const [stage, setStage]       = useState<'loading' | 'vocab' | 'exercise' | 'done' | 'error'>('loading');
+  const [stage, setStage]       = useState<'loading' | 'vocab' | 'exercise' | 'handoff' | 'done' | 'error'>('loading');
   const [vocab, setVocab]       = useState<Vocab[]>([]);
   const [grammarPoint, setGP]   = useState<any>(null);
   const [exercises, setEx]      = useState<Exercise[]>([]);
@@ -52,6 +53,10 @@ function LessonInner() {
   const [alreadyDone, setDone]  = useState(false);
   const [readyForNew, setReady] = useState(false);
   const [accuracy, setAccuracy] = useState(0);
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explaining, setExplaining]   = useState(false);
+  // Questions flagged (by index) to carry into the tutor chat at the end of the set
+  const [carryover, setCarryover]     = useState<Record<number, CarryItem>>({});
 
   useEffect(() => {
     fetch('/api/lesson/generate', {
@@ -98,8 +103,55 @@ function LessonInner() {
   function next() {
     setFeedback(null);
     setAnswer('');
+    setExplanation(null);
+    setExplaining(false);
     if (idx + 1 < exercises.length) setIdx(idx + 1);
     else finish();
+  }
+
+  async function toggleExplain() {
+    if (explanation) { setExplanation(null); return; }   // collapse if already shown
+    setExplaining(true);
+    const current = exercises[idx];
+    try {
+      const res = await fetch('/api/lesson/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          direction:          current.direction,
+          prompt:             current.prompt,
+          reference:          current.reference,
+          userAnswer:         answer,
+          grammarTitle:       grammarPoint?.title,
+          grammarDescription: grammarPoint?.description,
+        }),
+      });
+      const data = await res.json();
+      setExplanation(data.explanation ?? "Couldn't load a fuller explanation — try again.");
+    } catch {
+      setExplanation("Couldn't load a fuller explanation — try again.");
+    } finally {
+      setExplaining(false);
+    }
+  }
+
+  function toggleCarryover() {
+    const current = exercises[idx];
+    setCarryover((prev) => {
+      const nextState = { ...prev };
+      if (nextState[idx]) {
+        delete nextState[idx];
+      } else {
+        nextState[idx] = {
+          direction:  current.direction,
+          prompt:     current.prompt,
+          reference:  current.reference,
+          userAnswer: answer,
+          correct:    !!feedback?.correct,
+        };
+      }
+      return nextState;
+    });
   }
 
   function excludeAndNext() {
@@ -114,14 +166,41 @@ function LessonInner() {
     next();
   }
 
+  function composeStudyMessage(items: CarryItem[]) {
+    const lines = items.map((it, i) => {
+      const dir = it.direction === 'en_to_sv' ? 'English → Swedish' : 'Swedish → English';
+      const verdict = it.correct
+        ? '✓ I got it right'
+        : `✗ I got it wrong — correct answer: "${it.reference}"`;
+      return `${i + 1}. (${dir}) "${it.prompt}"\n   – I wrote: "${it.userAnswer || '(blank)'}" ${verdict}`;
+    });
+    return `I want to study these practice sentences more:\n\n${lines.join('\n')}\n\n` +
+      `Can you explain the grammar in each one simply, and give me a couple more examples of the same pattern?`;
+  }
+
   async function finish() {
-    const res  = await fetch('/api/lesson/complete', {
+    const items = Object.values(carryover);
+    if (items.length) setStage('handoff');
+
+    // Record completion once (streak, readiness, etc.)
+    const data = await fetch('/api/lesson/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode }),
-    });
-    const data = await res.json();
-    setStreak(data.streak);
+    }).then((r) => r.json()).catch(() => ({}));
+
+    // If anything was flagged, drop it into the tutor chat and jump there
+    if (items.length) {
+      const ok = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: composeStudyMessage(items) }),
+      }).then((r) => r.ok).catch(() => false);
+      if (ok) { window.location.assign('/chat'); return; }
+      // chat send failed — fall through to the normal done screen
+    }
+
+    setStreak(data.streak ?? null);
     setDone(!!data.already_done);
     setReady(!!data.ready_for_new);
     setAccuracy(data.recent_accuracy ?? 0);
@@ -130,6 +209,7 @@ function LessonInner() {
 
   if (stage === 'loading') return <div className="wrap"><div className="card">{LOADING_MSG[mode]}</div></div>;
   if (stage === 'error')   return <div className="wrap"><div className="card">Couldn't reach the tutor. Check your connection and try again.</div></div>;
+  if (stage === 'handoff') return <div className="wrap"><div className="card">Saving your flagged questions to the tutor chat…</div></div>;
 
   if (stage === 'vocab') {
     return (
@@ -190,9 +270,45 @@ function LessonInner() {
                   </div>
                 )}
               </div>
+
+              {/* Dig deeper / flag for chat */}
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginTop: 12 }}>
+                <button
+                  className="btn btn-plain"
+                  style={{ width: 'auto', padding: '8px 14px', fontSize: 13 }}
+                  onClick={toggleExplain}
+                  disabled={explaining}
+                >
+                  {explaining ? 'Explaining…' : explanation ? 'Hide explanation' : 'Explain more'}
+                </button>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
+                  <input type="checkbox" checked={!!carryover[idx]} onChange={toggleCarryover} />
+                  Study this in chat
+                </label>
+              </div>
+
+              {explanation && (
+                <div style={{
+                  marginTop: 12,
+                  padding: 14,
+                  border: '2.5px solid var(--ink)',
+                  borderRadius: 12,
+                  background: 'var(--surface)',
+                  fontSize: 14,
+                  lineHeight: 1.6,
+                  whiteSpace: 'pre-wrap',
+                }}>
+                  {explanation}
+                </div>
+              )}
+
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
                 <button className="btn btn-primary" style={{ flex: 1 }} onClick={next}>
-                  {idx + 1 < exercises.length ? 'Next' : (mode === 'daily' ? 'Finish today' : 'Finish')}
+                  {idx + 1 < exercises.length
+                    ? 'Next'
+                    : Object.keys(carryover).length > 0
+                      ? 'Finish & study in chat →'
+                      : (mode === 'daily' ? 'Finish today' : 'Finish')}
                 </button>
                 {current.sentence_id && (
                   <button className="btn-skip" onClick={excludeAndNext} title="Don't show this sentence again">
