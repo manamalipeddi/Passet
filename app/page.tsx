@@ -1,4 +1,5 @@
 import { getServiceClient } from '@/lib/supabase';
+import { GRAMMAR_INTERVAL } from '@/lib/config';
 import HearAWord from './components/HearAWord';
 
 const GREETINGS = [
@@ -50,6 +51,11 @@ export default async function Home() {
   const allDone  = (grammarStarted ?? 0) >= (grammarTotal ?? 1) && touched >= (totalWords ?? 1);
   const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
 
+  // Grammar pacing — a new grammar point only every GRAMMAR_INTERVAL vocab lessons.
+  const sinceGrammar       = state?.vocab_lessons_since_grammar ?? 0;
+  const nextIsGrammar      = sinceGrammar >= GRAMMAR_INTERVAL && !!nextGrammar;
+  const lessonsTilGrammar  = Math.max(GRAMMAR_INTERVAL - sinceGrammar, 0);
+
   return (
     <div className="wrap">
       <h1 style={{ fontSize: 26, lineHeight: 1.3, margin: 0 }}>{greeting}</h1>
@@ -75,24 +81,35 @@ export default async function Home() {
         boxShadow: '7px 7px 0 var(--mustard)',
       }}>
         <span className="tag" style={{ background: 'var(--mustard)', color: 'var(--ink)' }}>learn</span>
-        {nextGrammar ? (
+        {nextIsGrammar ? (
           <>
             <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
               Next up: {nextGrammar.title}
             </p>
             <p style={{ margin: '0 0 22px', fontSize: 12, color: 'rgba(250,243,231,0.5)' }}>
               <span className={`cefr-tag cefr-${nextGrammar.cefr_level}`}>{nextGrammar.cefr_level}</span>
-              {' '}· grammar point #{nextGrammar.sequence_order}
+              {' '}· new grammar point #{nextGrammar.sequence_order}
+            </p>
+          </>
+        ) : !allDone ? (
+          <>
+            <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
+              Next up: new words
+            </p>
+            <p style={{ margin: '0 0 22px', fontSize: 12, color: 'rgba(250,243,231,0.5)' }}>
+              {nextGrammar
+                ? `${lessonsTilGrammar} more word ${lessonsTilGrammar === 1 ? 'lesson' : 'lessons'}, then grammar — “${nextGrammar.title}”`
+                : 'All grammar introduced — building vocabulary'}
             </p>
           </>
         ) : (
           <p style={{ margin: '14px 0 22px', color: 'rgba(250,243,231,0.55)', fontSize: 14 }}>
-            {allDone ? 'All content introduced — keep practicing!' : 'New words to learn'}
+            All content introduced — keep practicing!
           </p>
         )}
         <a href="/lesson?mode=learn">
           <button className="btn btn-secondary" style={{ boxShadow: '4px 4px 0 rgba(250,243,231,0.15)' }}>
-            Learn something new →
+            {nextIsGrammar ? 'Learn new grammar →' : 'Learn new words →'}
           </button>
         </a>
         <div style={{ height: 10 }} />

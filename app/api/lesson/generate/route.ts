@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/supabase';
 import { callClaude } from '@/lib/anthropic';
+import { GRAMMAR_INTERVAL } from '@/lib/config';
 
 const NEEDED = 3;
 
@@ -88,32 +89,68 @@ export async function POST(req: Request) {
     vocab = [...(dueProgress ?? []).map((p: any) => p.words), ...newWords];
   }
 
-  // ── LEARN (introduce next un-started content, no cap) ────────────────────
+  // ── LEARN (paced: one new grammar point per GRAMMAR_INTERVAL vocab lessons)
   if (mode === 'learn') {
-    // Next grammar point by sequence_order
+    // What new grammar point would be next, if/when it's grammar's turn?
     const { data: startedGp } = await supabase.from('user_grammar_progress').select('grammar_point_id');
     const startedGpIds = (startedGp ?? []).map((s: any) => s.grammar_point_id);
     let gq = supabase.from('grammar_points').select('*').order('sequence_order').limit(1);
     if (startedGpIds.length) gq = gq.not('id', 'in', `(${startedGpIds.join(',')})`);
     const { data: gpCands } = await gq;
-    grammarPoint = gpCands?.[0] ?? null;
-    if (grammarPoint) {
-      await supabase.from('user_grammar_progress').insert({ grammar_point_id: grammarPoint.id, next_review_date: today });
-    }
+    const nextNewGrammar = gpCands?.[0] ?? null;
 
-    // Next word batch by rank
-    const { data: startedW } = await supabase.from('user_progress').select('word_id');
-    const startedWIds = (startedW ?? []).map((p: any) => p.word_id);
-    let wq = supabase.from('words').select('*').eq('source', 'curriculum').order('rank').limit(3 + startedWIds.length);
-    if (startedWIds.length) wq = wq.not('id', 'in', `(${startedWIds.join(',')})`);
-    const { data: wCands } = await wq;
-    const newWords = (wCands ?? []).filter((w: any) => !startedWIds.includes(w.id)).slice(0, 3);
-    if (newWords.length) {
-      await supabase.from('user_progress').insert(
-        newWords.map((w: any) => ({ word_id: w.id, status: 'learning', next_review_date: today })),
-      );
+    // Where we are in the grammar/vocab cycle
+    const { data: st } = await supabase.from('streak_state').select('vocab_lessons_since_grammar').eq('id', 1).single();
+    const sinceGrammar = st?.vocab_lessons_since_grammar ?? 0;
+
+    // Helper: introduce the next word batch by rank
+    const introduceWords = async () => {
+      const { data: startedW } = await supabase.from('user_progress').select('word_id');
+      const startedWIds = (startedW ?? []).map((p: any) => p.word_id);
+      let wq = supabase.from('words').select('*').eq('source', 'curriculum').order('rank').limit(3 + startedWIds.length);
+      if (startedWIds.length) wq = wq.not('id', 'in', `(${startedWIds.join(',')})`);
+      const { data: wCands } = await wq;
+      const newWords = (wCands ?? []).filter((w: any) => !startedWIds.includes(w.id)).slice(0, 3);
+      if (newWords.length) {
+        await supabase.from('user_progress').insert(
+          newWords.map((w: any) => ({ word_id: w.id, status: 'learning', next_review_date: today })),
+        );
+      }
+      return newWords;
+    };
+
+    // Grammar's turn once enough vocab lessons have passed — and only if there's
+    // a new point left to teach. Otherwise this is a vocabulary lesson.
+    const grammarTurn = sinceGrammar >= GRAMMAR_INTERVAL && !!nextNewGrammar;
+
+    if (grammarTurn) {
+      grammarPoint = nextNewGrammar;
+      await supabase.from('user_grammar_progress').insert({ grammar_point_id: grammarPoint.id, next_review_date: today });
+      // Practice the new structure with words already in rotation, not brand-new ones
+      const { data: ctx } = await supabase.from('user_progress')
+        .select('word_id, words(*)')
+        .order('last_reviewed_at', { ascending: false, nullsFirst: false })
+        .limit(3);
+      vocab = (ctx ?? []).map((p: any) => p.words).filter(Boolean);
+      await supabase.from('streak_state').update({ vocab_lessons_since_grammar: 0 }).eq('id', 1);
+    } else {
+      const newWords = await introduceWords();
+      if (newWords.length) {
+        vocab = newWords;
+        await supabase.from('streak_state').update({ vocab_lessons_since_grammar: sinceGrammar + 1 }).eq('id', 1);
+      } else if (nextNewGrammar) {
+        // Out of new words but grammar remains — give the next grammar point now
+        grammarPoint = nextNewGrammar;
+        await supabase.from('user_grammar_progress').insert({ grammar_point_id: grammarPoint.id, next_review_date: today });
+        const { data: ctx } = await supabase.from('user_progress')
+          .select('word_id, words(*)')
+          .order('last_reviewed_at', { ascending: false, nullsFirst: false })
+          .limit(3);
+        vocab = (ctx ?? []).map((p: any) => p.words).filter(Boolean);
+        await supabase.from('streak_state').update({ vocab_lessons_since_grammar: 0 }).eq('id', 1);
+      }
+      // else: nothing new left at all → handled by the nothing_to_practice guard
     }
-    vocab = newWords;
   }
 
   // ── TARGETED (specific word or grammar, SRS graded normally) ────────────
@@ -156,34 +193,35 @@ export async function POST(req: Request) {
       .order('next_review_date')
       .limit(15);
     // Curriculum words take priority; stable sort preserves date order within source
-    const dueProgress = (rawDue ?? [])
+    let picked = (rawDue ?? [])
       .sort((a: any, b: any) =>
         (a.words?.source === 'curriculum' ? 0 : 1) - (b.words?.source === 'curriculum' ? 0 : 1)
       )
       .slice(0, WORDS_TARGET);
-    const existingIds = dueProgress.map((p: any) => p.word_id);
 
-    // Fill remaining capacity with new words by rank
-    let newWords: any[] = [];
-    const capacity = WORDS_TARGET - dueProgress.length;
-    if (capacity > 0) {
-      let nq = supabase.from('words').select('*').order('rank').limit(capacity + existingIds.length);
-      if (existingIds.length) nq = nq.not('id', 'in', `(${existingIds.join(',')})`);
-      const { data: cands } = await nq;
-      newWords = (cands ?? []).filter((w: any) => !existingIds.includes(w.id)).slice(0, capacity);
-      if (newWords.length) {
-        await supabase.from('user_progress').insert(
-          newWords.map((w: any) => ({ word_id: w.id, status: 'learning', next_review_date: today })),
-        );
-      }
+    // If nothing (or little) is due, top up with already-started words practiced
+    // least recently — practice never introduces brand-new words.
+    if (picked.length < WORDS_TARGET) {
+      const pickedIds = picked.map((p: any) => p.word_id);
+      let tq = supabase
+        .from('user_progress')
+        .select('word_id, words(*)')
+        .order('last_reviewed_at', { ascending: true, nullsFirst: true })
+        .limit(WORDS_TARGET + pickedIds.length);
+      if (pickedIds.length) tq = tq.not('word_id', 'in', `(${pickedIds.join(',')})`);
+      const { data: extra } = await tq;
+      picked = [...picked, ...(extra ?? [])].slice(0, WORDS_TARGET);
     }
-    vocab = [...dueProgress.map((p: any) => p.words), ...newWords];
+
+    vocab = picked.map((p: any) => p.words).filter(Boolean);
     // grammarPoint stays null — sentences reuse already-learned grammar
   }
 
-  // ── GRAMMAR (one grammar point in focus; vocabulary incidental) ──────────
+  // ── GRAMMAR (drill an already-introduced point; vocabulary incidental) ───
+  // New grammar is unlocked only through the paced "learn" flow, so this mode
+  // never races ahead — it re-practices points you've already met.
   if (mode === 'grammar') {
-    // Due grammar first, then introduce next by sequence_order
+    // Due grammar first…
     const { data: dueGrammar } = await supabase
       .from('user_grammar_progress')
       .select('grammar_point_id, grammar_points(*)')
@@ -192,16 +230,15 @@ export async function POST(req: Request) {
       .limit(1);
     grammarPoint = dueGrammar?.[0] ? (dueGrammar[0] as any).grammar_points : null;
 
+    // …otherwise re-practice the introduced point touched least recently.
+    // (No fallback to brand-new points — new grammar only comes from "learn".)
     if (!grammarPoint) {
-      const { data: started } = await supabase.from('user_grammar_progress').select('grammar_point_id');
-      const startedIds = (started ?? []).map((s: any) => s.grammar_point_id);
-      let gq = supabase.from('grammar_points').select('*').order('sequence_order').limit(1);
-      if (startedIds.length) gq = gq.not('id', 'in', `(${startedIds.join(',')})`);
-      const { data: cands } = await gq;
-      grammarPoint = cands?.[0] ?? null;
-      if (grammarPoint) {
-        await supabase.from('user_grammar_progress').insert({ grammar_point_id: grammarPoint.id, next_review_date: today });
-      }
+      const { data: anyGrammar } = await supabase
+        .from('user_grammar_progress')
+        .select('grammar_point_id, grammar_points(*)')
+        .order('last_reviewed_at', { ascending: true, nullsFirst: true })
+        .limit(1);
+      grammarPoint = anyGrammar?.[0] ? (anyGrammar[0] as any).grammar_points : null;
     }
 
     // Recently-practiced words give the sentences natural material
