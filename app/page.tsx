@@ -65,16 +65,6 @@ export default async function Home() {
         </div>
       </div>
 
-      {/* Practice — two distinct but equal everyday sessions */}
-      <div className="row2" style={{ marginTop: 18 }}>
-        <a href="/lesson?mode=words" style={{ display: 'block' }}>
-          <button className="btn btn-primary">Practice words</button>
-        </a>
-        <a href="/lesson?mode=grammar" style={{ display: 'block' }}>
-          <button className="btn btn-secondary">Practice grammar</button>
-        </a>
-      </div>
-
       {/* Hero — learn section */}
       <div style={{
         background: 'var(--green)',
@@ -106,16 +96,14 @@ export default async function Home() {
           </button>
         </a>
         <div style={{ height: 10 }} />
-        <a href="/lesson?mode=extra">
-          <button className="btn" style={{
-            background: 'transparent',
-            color: '#FAF3E7',
-            border: '3px solid rgba(250,243,231,0.25)',
-            boxShadow: '4px 4px 0 rgba(250,243,231,0.06)',
-          }}>
-            Practice more (no new words)
-          </button>
-        </a>
+        <div className="row2">
+          <a href="/lesson?mode=words" style={{ display: 'block' }}>
+            <button className="btn btn-primary">Practice words</button>
+          </a>
+          <a href="/lesson?mode=grammar" style={{ display: 'block' }}>
+            <button className="btn btn-primary">Practice grammar</button>
+          </a>
+        </div>
       </div>
 
       <HearAWord />
