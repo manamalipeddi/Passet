@@ -2,7 +2,7 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 
-type Mode = 'daily' | 'extra' | 'learn' | 'targeted';
+type Mode = 'daily' | 'extra' | 'learn' | 'targeted' | 'words' | 'grammar';
 type Vocab = { id: string; lemma: string; pos: string; gender: string | null; forms: any; example_sv: string; example_en: string };
 type Exercise = { prompt: string; reference: string; direction: 'en_to_sv' | 'sv_to_en'; sentence_id?: string };
 
@@ -11,6 +11,8 @@ const LOADING_MSG: Record<Mode, string> = {
   extra:    'Pulling a practice set together…',
   learn:    'Loading next lesson in the curriculum…',
   targeted: 'Building targeted session…',
+  words:    'Pulling your word practice together…',
+  grammar:  'Setting up grammar practice…',
 };
 
 const STAGE_TAG: Record<Mode, string> = {
@@ -18,6 +20,8 @@ const STAGE_TAG: Record<Mode, string> = {
   extra:    "practice",
   learn:    'new material',
   targeted: 'targeted practice',
+  words:    'word practice',
+  grammar:  'grammar focus',
 };
 
 export default function Lesson() {
@@ -31,7 +35,7 @@ export default function Lesson() {
 function LessonInner() {
   const params  = useSearchParams();
   const rawMode = params.get('mode') ?? 'daily';
-  const mode: Mode = (['daily', 'extra', 'learn', 'targeted'] as const).includes(rawMode as Mode)
+  const mode: Mode = (['daily', 'extra', 'learn', 'targeted', 'words', 'grammar'] as const).includes(rawMode as Mode)
     ? (rawMode as Mode) : 'daily';
   const wordId   = params.get('wordId')    ?? undefined;
   const grammarId = params.get('grammarId') ?? undefined;
@@ -63,7 +67,8 @@ function LessonInner() {
           ...data.exercises.sv_to_en.map((e: any) => ({ ...e, direction: 'sv_to_en' as const })),
         ];
         setEx(ex);
-        setStage('vocab');
+        // 'extra' and 'words' have no grammar intro — drop straight into sentences
+        setStage(mode === 'extra' || mode === 'words' ? 'exercise' : 'vocab');
       })
       .catch(() => setStage('error'));
   }, [mode, wordId, grammarId]);

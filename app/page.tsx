@@ -65,6 +65,16 @@ export default async function Home() {
         </div>
       </div>
 
+      {/* Practice — two distinct but equal everyday sessions */}
+      <div className="row2" style={{ marginTop: 18 }}>
+        <a href="/lesson?mode=words" style={{ display: 'block' }}>
+          <button className="btn btn-primary">Practice words</button>
+        </a>
+        <a href="/lesson?mode=grammar" style={{ display: 'block' }}>
+          <button className="btn btn-secondary">Practice grammar</button>
+        </a>
+      </div>
+
       {/* Hero — learn section */}
       <div style={{
         background: 'var(--green)',

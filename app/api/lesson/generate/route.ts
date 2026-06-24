@@ -4,7 +4,7 @@ import { callClaude } from '@/lib/anthropic';
 
 const NEEDED = 3;
 
-type Mode = 'daily' | 'extra' | 'learn' | 'targeted';
+type Mode = 'daily' | 'extra' | 'learn' | 'targeted' | 'words' | 'grammar';
 
 async function fetchCached(
   supabase: ReturnType<typeof getServiceClient>,
@@ -27,7 +27,7 @@ async function fetchCached(
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  const mode: Mode = (['daily', 'extra', 'learn', 'targeted'] as const).includes(body.mode)
+  const mode: Mode = (['daily', 'extra', 'learn', 'targeted', 'words', 'grammar'] as const).includes(body.mode)
     ? body.mode : 'daily';
 
   const supabase = getServiceClient();
@@ -145,6 +145,74 @@ export async function POST(req: Request) {
     }
   }
 
+  // ── WORDS (vocabulary only — no grammar focus, already-learned grammar) ──
+  if (mode === 'words') {
+    const WORDS_TARGET = 6;
+    // SRS-due words first
+    const { data: rawDue } = await supabase
+      .from('user_progress')
+      .select('word_id, words(*)')
+      .lte('next_review_date', today)
+      .order('next_review_date')
+      .limit(15);
+    // Curriculum words take priority; stable sort preserves date order within source
+    const dueProgress = (rawDue ?? [])
+      .sort((a: any, b: any) =>
+        (a.words?.source === 'curriculum' ? 0 : 1) - (b.words?.source === 'curriculum' ? 0 : 1)
+      )
+      .slice(0, WORDS_TARGET);
+    const existingIds = dueProgress.map((p: any) => p.word_id);
+
+    // Fill remaining capacity with new words by rank
+    let newWords: any[] = [];
+    const capacity = WORDS_TARGET - dueProgress.length;
+    if (capacity > 0) {
+      let nq = supabase.from('words').select('*').order('rank').limit(capacity + existingIds.length);
+      if (existingIds.length) nq = nq.not('id', 'in', `(${existingIds.join(',')})`);
+      const { data: cands } = await nq;
+      newWords = (cands ?? []).filter((w: any) => !existingIds.includes(w.id)).slice(0, capacity);
+      if (newWords.length) {
+        await supabase.from('user_progress').insert(
+          newWords.map((w: any) => ({ word_id: w.id, status: 'learning', next_review_date: today })),
+        );
+      }
+    }
+    vocab = [...dueProgress.map((p: any) => p.words), ...newWords];
+    // grammarPoint stays null — sentences reuse already-learned grammar
+  }
+
+  // ── GRAMMAR (one grammar point in focus; vocabulary incidental) ──────────
+  if (mode === 'grammar') {
+    // Due grammar first, then introduce next by sequence_order
+    const { data: dueGrammar } = await supabase
+      .from('user_grammar_progress')
+      .select('grammar_point_id, grammar_points(*)')
+      .lte('next_review_date', today)
+      .order('next_review_date')
+      .limit(1);
+    grammarPoint = dueGrammar?.[0] ? (dueGrammar[0] as any).grammar_points : null;
+
+    if (!grammarPoint) {
+      const { data: started } = await supabase.from('user_grammar_progress').select('grammar_point_id');
+      const startedIds = (started ?? []).map((s: any) => s.grammar_point_id);
+      let gq = supabase.from('grammar_points').select('*').order('sequence_order').limit(1);
+      if (startedIds.length) gq = gq.not('id', 'in', `(${startedIds.join(',')})`);
+      const { data: cands } = await gq;
+      grammarPoint = cands?.[0] ?? null;
+      if (grammarPoint) {
+        await supabase.from('user_grammar_progress').insert({ grammar_point_id: grammarPoint.id, next_review_date: today });
+      }
+    }
+
+    // Recently-practiced words give the sentences natural material
+    const { data: ctx } = await supabase
+      .from('user_progress')
+      .select('word_id, words(*)')
+      .order('last_reviewed_at', { ascending: false, nullsFirst: false })
+      .limit(3);
+    vocab = (ctx ?? []).map((p: any) => p.words).filter(Boolean);
+  }
+
   if (!vocab.length && !grammarPoint) {
     return NextResponse.json({ error: 'nothing_to_practice' }, { status: 400 });
   }
@@ -171,13 +239,16 @@ export async function POST(req: Request) {
 
   if (enToSvNeeded > 0 || svToEnNeeded > 0) {
     const vocabList = vocab.map((w: any) => `${w.lemma} (${w.pos}, "${w.example_en}")`).join('; ');
-    const grammarTitle = grammarPoint?.title ?? 'general practice';
+    const hasGrammarFocus = !!grammarPoint;
+    const grammarTitle = grammarPoint?.title ?? '';
     const grammarDesc  = grammarPoint?.description ?? '';
 
     const parts: string[] = [];
     const outKeys: string[] = [];
     if (enToSvNeeded > 0) {
-      parts.push(`Generate exactly ${enToSvNeeded} English→Swedish sentence(s): naturally exercise the grammar focus, draw only from the listed vocabulary plus basic function words.`);
+      parts.push(hasGrammarFocus
+        ? `Generate exactly ${enToSvNeeded} English→Swedish sentence(s): naturally exercise the grammar focus, draw only from the listed vocabulary plus basic function words.`
+        : `Generate exactly ${enToSvNeeded} English→Swedish sentence(s): naturally use the listed target vocabulary in everyday sentences. Use ONLY simple grammar the learner has already met — do not introduce or explain any new grammar structure. Draw only from the listed vocabulary plus basic function words.`);
       outKeys.push(`"en_to_sv": [{"sentence_en": "English prompt", "sentence_sv": "correct Swedish"}]`);
     }
     if (svToEnNeeded > 0) {
@@ -185,9 +256,13 @@ export async function POST(req: Request) {
       outKeys.push(`"sv_to_en": [{"sentence_sv": "Swedish prompt", "sentence_en": "correct English"}]`);
     }
 
+    const focusLine = hasGrammarFocus
+      ? `Grammar focus: "${grammarTitle}" — ${grammarDesc}`
+      : `Focus: drilling the listed vocabulary. Keep every sentence within basic, already-learned grammar — do not introduce any new grammar structure.`;
+
     const prompt = `You are a Swedish tutor generating practice exercises.
 Learner vocabulary: ${vocabList}
-Grammar focus: "${grammarTitle}" — ${grammarDesc}
+${focusLine}
 ${parts.join('\n')}
 Return ONLY valid JSON, no markdown: { ${outKeys.join(', ')} }`;
 
