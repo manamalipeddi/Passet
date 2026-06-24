@@ -24,8 +24,12 @@ export default function ChatInterface({ initialMessages }: { initialMessages: Me
     if (nav) setNavH(Math.ceil(nav.getBoundingClientRect().height));
   }, []);
 
+  // First paint must land at the bottom instantly (smooth scroll is unreliable
+  // on initial load and would leave new messages below the fold); animate after.
+  const didInitialScroll = useRef(false);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: messages.length > 2 ? 'smooth' : 'instant' });
+    bottomRef.current?.scrollIntoView({ behavior: didInitialScroll.current ? 'smooth' : 'instant' });
+    didInitialScroll.current = true;
   }, [messages, loading]);
 
   function resizeTextarea() {

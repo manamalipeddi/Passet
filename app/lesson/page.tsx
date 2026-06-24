@@ -168,14 +168,15 @@ function LessonInner() {
 
   function composeStudyMessage(items: CarryItem[]) {
     const lines = items.map((it, i) => {
-      const dir = it.direction === 'en_to_sv' ? 'English → Swedish' : 'Swedish → English';
-      const verdict = it.correct
-        ? '✓ I got it right'
-        : `✗ I got it wrong — correct answer: "${it.reference}"`;
-      return `${i + 1}. (${dir}) "${it.prompt}"\n   – I wrote: "${it.userAnswer || '(blank)'}" ${verdict}`;
+      const dir = it.direction === 'en_to_sv' ? 'English to Swedish' : 'Swedish to English';
+      const detail = it.correct
+        ? `I translated it correctly as "${it.reference}".`
+        : `I answered "${it.userAnswer || '(left blank)'}", but the correct answer is "${it.reference}".`;
+      return `${i + 1}. Translate ${dir}: "${it.prompt}". ${detail}`;
     });
-    return `I want to study these practice sentences more:\n\n${lines.join('\n')}\n\n` +
-      `Can you explain the grammar in each one simply, and give me a couple more examples of the same pattern?`;
+    return `I just finished a practice set and want to understand these sentences better. ` +
+      `For each one below, please explain the grammar simply and give one or two more examples that follow the same pattern.\n\n` +
+      lines.join('\n');
   }
 
   async function finish() {
@@ -272,16 +273,16 @@ function LessonInner() {
               </div>
 
               {/* Dig deeper / flag for chat */}
-              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginTop: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap', gap: 10, marginTop: 12 }}>
                 <button
                   className="btn btn-plain"
-                  style={{ width: 'auto', padding: '8px 14px', fontSize: 13 }}
+                  style={{ width: 'auto', padding: '8px 14px', fontSize: 13, flexShrink: 0 }}
                   onClick={toggleExplain}
                   disabled={explaining}
                 >
                   {explaining ? 'Explaining…' : explanation ? 'Hide explanation' : 'Explain more'}
                 </button>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0 }}>
                   <input type="checkbox" checked={!!carryover[idx]} onChange={toggleCarryover} />
                   Study this in chat
                 </label>
