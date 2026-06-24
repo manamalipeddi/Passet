@@ -50,6 +50,8 @@ function LessonInner() {
   const [checking, setChecking] = useState(false);
   const [streak, setStreak]     = useState<number | null>(null);
   const [alreadyDone, setDone]  = useState(false);
+  const [readyForNew, setReady] = useState(false);
+  const [accuracy, setAccuracy] = useState(0);
 
   useEffect(() => {
     fetch('/api/lesson/generate', {
@@ -113,10 +115,16 @@ function LessonInner() {
   }
 
   async function finish() {
-    const res  = await fetch('/api/lesson/complete', { method: 'POST' });
+    const res  = await fetch('/api/lesson/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
     const data = await res.json();
     setStreak(data.streak);
     setDone(!!data.already_done);
+    setReady(!!data.ready_for_new);
+    setAccuracy(data.recent_accuracy ?? 0);
     setStage('done');
   }
 
@@ -216,6 +224,23 @@ function LessonInner() {
         <span className="tag">{doneTag}</span>
         <h2 style={{ marginTop: 10 }}>{doneHead}</h2>
         {streak !== null && <p className="muted">🔥 {streak} day{streak === 1 ? '' : 's'} running.</p>}
+        {readyForNew && (
+          <div style={{
+            marginTop: 16,
+            padding: 16,
+            border: '3px solid var(--ink)',
+            borderRadius: 12,
+            background: 'var(--green)',
+            boxShadow: '4px 4px 0 var(--ink)',
+          }}>
+            <p style={{ margin: '0 0 10px', fontWeight: 700, color: '#FAF3E7' }}>
+              🌟 {Math.round(accuracy * 100)}% right lately — you're ready for something new.
+            </p>
+            <a href="/lesson?mode=learn">
+              <button className="btn btn-secondary">Learn something new →</button>
+            </a>
+          </div>
+        )}
         <a href="/"><button className="btn btn-plain" style={{ marginTop: 12 }}>Back to dashboard</button></a>
         {mode === 'learn' && (
           <a href="/lesson?mode=learn">
