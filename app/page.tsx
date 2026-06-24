@@ -75,16 +75,17 @@ export default async function Home() {
   }
 
   // Trouble spots — grammar points and words ranked by accuracy (worst first).
-  // Only things gotten wrong at least once; accuracy from running tallies.
+  // Only things gotten wrong at least WRONG_THRESHOLD times; accuracy from tallies.
+  const WRONG_THRESHOLD = 2;
   type Trouble = { kind: 'grammar' | 'word'; id: string; name: string; accuracy: number; attempts: number };
   const wordTrouble: Trouble[] = (wordProgRows ?? [])
-    .filter((p: any) => p.words && (p.times_wrong ?? 0) > 0)
+    .filter((p: any) => p.words && (p.times_wrong ?? 0) >= WRONG_THRESHOLD)
     .map((p: any) => {
       const c = p.times_correct ?? 0, w = p.times_wrong ?? 0;
       return { kind: 'word', id: p.words.id, name: p.words.lemma, accuracy: c / (c + w), attempts: c + w };
     });
   const grammarTrouble: Trouble[] = (grammarProgRows ?? [])
-    .filter((g: any) => g.grammar_points && (g.times_wrong ?? 0) > 0)
+    .filter((g: any) => g.grammar_points && (g.times_wrong ?? 0) >= WRONG_THRESHOLD)
     .map((g: any) => {
       const c = g.times_correct ?? 0, w = g.times_wrong ?? 0;
       return { kind: 'grammar', id: g.grammar_points.id, name: g.grammar_points.title, accuracy: c / (c + w), attempts: c + w };
@@ -205,7 +206,9 @@ export default async function Home() {
           {secondLook.length === 0 && <p className="muted">Nothing wrong in your last few sessions — nice.</p>}
           {secondLook.map((m: any) => (
             <div className="vocab-item" key={m.id}>
-              <span style={{ marginRight: 6 }}>✏️</span>{m.prompt_text}
+              <div className="muted">{m.prompt_text}</div>
+              <div style={{ fontWeight: 600 }}>{m.target_text}</div>
+              <div className="muted" style={{ marginTop: 4 }}>{m.explanation}</div>
             </div>
           ))}
         </div>
