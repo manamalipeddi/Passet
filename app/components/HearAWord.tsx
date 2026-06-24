@@ -53,9 +53,7 @@ export default function HearAWord() {
   }
 
   return (
-    <div className="card" style={{ marginTop: 18 }}>
-      <span className="tag">heard a word?</span>
-
+    <div>
       {(stage === 'idle' || stage === 'loading') && (
         <form onSubmit={handleSubmit} style={{ marginTop: 10, display: 'flex', gap: 8 }}>
           <input

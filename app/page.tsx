@@ -26,6 +26,8 @@ export default async function Home() {
     { count: grammarTotal },
     { data: recent },
     { data: startedGpRows },
+    { data: wordProgRows },
+    { data: grammarProgRows },
   ] = await Promise.all([
     supabase.from('streak_state').select('*').eq('id', 1).single(),
     supabase.from('user_progress').select('*', { count: 'exact', head: true }).eq('status', 'learning'),
@@ -33,8 +35,10 @@ export default async function Home() {
     supabase.from('words').select('*', { count: 'exact', head: true }),
     supabase.from('user_grammar_progress').select('*', { count: 'exact', head: true }),
     supabase.from('grammar_points').select('*', { count: 'exact', head: true }),
-    supabase.from('attempts').select('*').order('created_at', { ascending: false }).limit(8),
+    supabase.from('attempts').select('*').order('created_at', { ascending: false }).limit(60),
     supabase.from('user_grammar_progress').select('grammar_point_id'),
+    supabase.from('user_progress').select('word_id, times_correct, times_wrong, words(id, lemma, translation, pos)'),
+    supabase.from('user_grammar_progress').select('grammar_point_id, times_correct, times_wrong, grammar_points(id, title)'),
   ]);
 
   // Next un-introduced grammar point (for "Learn" card preview)
@@ -44,12 +48,50 @@ export default async function Home() {
   const { data: nextGpData } = await nextGpQ;
   const nextGrammar = nextGpData?.[0] ?? null;
 
-  const lastLesson = (recent ?? []).slice().reverse();
-  const mistakes   = (recent ?? []).filter((a: any) => !a.is_correct).slice(0, 4);
   const touched    = (learning ?? 0) + (known ?? 0);
   const streak     = state?.current_streak ?? 0;
   const allDone  = (grammarStarted ?? 0) >= (grammarTotal ?? 1) && touched >= (totalWords ?? 1);
   const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+
+  // Worth a second look — wrong answers from the last 3 practice sessions,
+  // deduped to just the prompt line. Sessions aren't stored, so we cluster
+  // recent attempts: a gap of >30 min between answers starts a new session.
+  const SESSION_GAP_MS = 30 * 60 * 1000;
+  let sessionsSeen = 0;
+  let lastT: number | null = null;
+  const seenWrong = new Set<string>();
+  const secondLook: any[] = [];
+  for (const a of (recent ?? [])) {
+    const t = new Date(a.created_at).getTime();
+    if (lastT === null) sessionsSeen = 1;
+    else if (lastT - t > SESSION_GAP_MS) sessionsSeen += 1;
+    if (sessionsSeen > 3) break;
+    lastT = t;
+    if (a.is_correct) continue;
+    const key = (a.prompt_text ?? '').trim().toLowerCase();
+    if (!key || seenWrong.has(key)) continue;
+    seenWrong.add(key);
+    secondLook.push(a);
+  }
+
+  // Trouble spots — grammar points and words ranked by accuracy (worst first).
+  // Only things gotten wrong at least once; accuracy from running tallies.
+  type Trouble = { kind: 'grammar' | 'word'; id: string; name: string; accuracy: number; attempts: number };
+  const wordTrouble: Trouble[] = (wordProgRows ?? [])
+    .filter((p: any) => p.words && (p.times_wrong ?? 0) > 0)
+    .map((p: any) => {
+      const c = p.times_correct ?? 0, w = p.times_wrong ?? 0;
+      return { kind: 'word', id: p.words.id, name: p.words.lemma, accuracy: c / (c + w), attempts: c + w };
+    });
+  const grammarTrouble: Trouble[] = (grammarProgRows ?? [])
+    .filter((g: any) => g.grammar_points && (g.times_wrong ?? 0) > 0)
+    .map((g: any) => {
+      const c = g.times_correct ?? 0, w = g.times_wrong ?? 0;
+      return { kind: 'grammar', id: g.grammar_points.id, name: g.grammar_points.title, accuracy: c / (c + w), attempts: c + w };
+    });
+  const trouble = [...grammarTrouble, ...wordTrouble]
+    .sort((a, b) => a.accuracy - b.accuracy || b.attempts - a.attempts)
+    .slice(0, 10);
 
   // Grammar pacing — a new grammar point only every GRAMMAR_INTERVAL vocab lessons.
   const sinceGrammar       = state?.vocab_lessons_since_grammar ?? 0;
@@ -71,16 +113,16 @@ export default async function Home() {
         </div>
       </div>
 
-      {/* Hero — learn section */}
-      <div style={{
+      {/* Hero — learn section (collapsible) */}
+      <details className="sec hero-green" style={{
         background: 'var(--green)',
         border: '3px solid var(--green)',
         borderRadius: 16,
         padding: '26px 24px',
         marginTop: 18,
         boxShadow: '7px 7px 0 var(--mustard)',
-      }}>
-        <span className="tag" style={{ background: 'var(--mustard)', color: 'var(--ink)' }}>learn</span>
+      }} open>
+        <summary><span className="tag" style={{ background: 'var(--mustard)', color: 'var(--ink)' }}>learn</span></summary>
         {nextIsGrammar ? (
           <>
             <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
@@ -121,37 +163,53 @@ export default async function Home() {
             <button className="btn btn-primary">Practice grammar</button>
           </a>
         </div>
-      </div>
+      </details>
 
-      <HearAWord />
+      <details className="card sec" style={{ marginTop: 18 }} open>
+        <summary><span className="tag">heard a word?</span></summary>
+        <HearAWord />
+      </details>
 
-      {lastLesson.length > 0 && (
-        <div className="card">
-          <span className="tag">last time</span>
-          <div style={{ marginTop: 10 }}>
-            {lastLesson.map((a: any) => (
-              <div className="vocab-item" key={a.id}>
-                <strong>{a.is_correct ? '✅' : '✏️'}</strong> {a.prompt_text}
+      {/* Trouble spots — lowest accuracy first */}
+      <details className="card sec" style={{ marginTop: 18 }} open>
+        <summary>
+          <span className="tag" style={{ background: 'var(--mustard)', color: 'var(--ink)' }}>trouble spots</span>
+          <span className="sec-count">{trouble.length}</span>
+        </summary>
+        <div style={{ marginTop: 10 }}>
+          {trouble.length === 0 && <p className="muted">No trouble spots yet — keep practicing.</p>}
+          {trouble.map((s) => (
+            <div className="seq-row" key={`${s.kind}-${s.id}`}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ fontWeight: 700 }}>{s.name}</span>
+                <span className="muted" style={{ fontStyle: 'italic', fontSize: 12 }}> · {s.kind}</span>
               </div>
-            ))}
-          </div>
+              <span className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{Math.round(s.accuracy * 100)}%</span>
+              <a href={s.kind === 'grammar' ? `/lesson?mode=targeted&grammarId=${s.id}` : `/lesson?mode=targeted&wordId=${s.id}`}>
+                <button className="btn btn-plain" style={{ padding: '6px 12px', fontSize: 12, width: 'auto', boxShadow: '2px 2px 0 var(--ink)' }}>
+                  Practice
+                </button>
+              </a>
+            </div>
+          ))}
         </div>
-      )}
+      </details>
 
-      {mistakes.length > 0 && (
-        <div className="card">
+      {/* Worth a second look — wrong in the last 3 sessions, deduped */}
+      <details className="card sec" style={{ marginTop: 18 }} open>
+        <summary>
           <span className="tag" style={{ background: 'var(--red)', color: '#fff' }}>worth a second look</span>
-          <div style={{ marginTop: 10 }}>
-            {mistakes.map((m: any) => (
-              <div className="vocab-item" key={m.id}>
-                <div className="muted">{m.prompt_text}</div>
-                <div style={{ fontWeight: 600 }}>{m.target_text}</div>
-                <div className="muted" style={{ marginTop: 4 }}>{m.explanation}</div>
-              </div>
-            ))}
-          </div>
+          <span className="sec-count">{secondLook.length}</span>
+        </summary>
+        <div style={{ marginTop: 10 }}>
+          {secondLook.length === 0 && <p className="muted">Nothing wrong in your last few sessions — nice.</p>}
+          {secondLook.map((m: any) => (
+            <div className="vocab-item" key={m.id}>
+              <span style={{ marginRight: 6 }}>✏️</span>{m.prompt_text}
+            </div>
+          ))}
         </div>
-      )}
+      </details>
     </div>
   );
 }

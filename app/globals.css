@@ -56,3 +56,4 @@ a{color:var(--red-dark);text-decoration:none;font-weight:700;}
 .sec-count{font-size:12px;font-weight:700;color:var(--text-muted);}
 .sec>summary::after{content:'▾';margin-left:auto;font-size:13px;color:var(--text-muted);}
 .sec:not([open])>summary::after{content:'▸';}
+.hero-green>summary::after{color:rgba(250,243,231,0.6);}
