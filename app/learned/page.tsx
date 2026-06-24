@@ -129,7 +129,7 @@ function WordRow({ r }: { r: any }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <span style={{ fontWeight: 700 }}>{w.lemma}</span>
         {w.translation && <span>: {w.translation}</span>}
-        <span className="muted" style={{ fontStyle: 'italic', fontSize: 12 }}>, {w.pos}{w.gender ? `, ${w.gender}` : ''}</span>
+        <span className="muted" style={{ fontStyle: 'italic', fontSize: 11 }}>, {w.pos}{w.gender ? `, ${w.gender}` : ''}</span>
       </div>
       <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>due {due}</span>
       <span className={`status-pill ${r.status}`}>{r.status === 'known' ? 'mastered' : r.status}</span>
