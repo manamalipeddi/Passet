@@ -2,7 +2,7 @@
 import { usePathname } from 'next/navigation';
 
 const LINKS = [
-  { href: '/',        label: 'Today'   },
+  { href: '/',        label: 'Home'    },
   { href: '/chat',    label: 'Chat'    },
   { href: '/learned', label: 'Learned' },
   { href: '/plan',    label: 'Plan'    },

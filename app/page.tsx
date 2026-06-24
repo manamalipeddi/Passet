@@ -152,10 +152,6 @@ export default async function Home() {
           </div>
         </div>
       )}
-
-      <p className="muted" style={{ marginTop: 20, textAlign: 'center' }}>
-        {grammarStarted ?? 0} of {grammarTotal ?? 0} grammar points underway
-      </p>
     </div>
   );
 }
