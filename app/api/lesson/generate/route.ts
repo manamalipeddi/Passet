@@ -7,23 +7,54 @@ const NEEDED = 3;
 
 type Mode = 'daily' | 'extra' | 'learn' | 'targeted' | 'words' | 'grammar';
 
+// Surface forms of a word (lemma + single-token inflections), lowercased.
+// Used to require/verify the focus word in targeted-word practice sentences.
+function wordForms(word: any): string[] {
+  const out = new Set<string>();
+  const add = (s: string) =>
+    s.toLowerCase().split('/').forEach((part) => {
+      const t = part.trim();
+      if (t && !/\s/.test(t) && /^[a-zåäöéü-]+$/i.test(t)) out.add(t);
+    });
+  if (word?.lemma) add(String(word.lemma));
+  const walk = (v: any, key?: string) => {
+    if (key === 'note') return;                  // skip free-text notes
+    if (typeof v === 'string') add(v);
+    else if (v && typeof v === 'object') for (const [k, val] of Object.entries(v)) walk(val, k);
+  };
+  walk(word?.forms);
+  return [...out];
+}
+
+function sentenceHasWord(sentence: string, forms: string[]): boolean {
+  if (!forms.length) return true;
+  const tokens = new Set((sentence ?? '').toLowerCase().split(/[^a-zåäöéü]+/i).filter(Boolean));
+  return forms.some((f) => tokens.has(f));
+}
+
 async function fetchCached(
   supabase: ReturnType<typeof getServiceClient>,
   direction: 'en_to_sv' | 'sv_to_en',
   grammarId: string | null,
   primaryWordId: string | null,
+  mustContainForms: string[] = [],
 ) {
   if (!grammarId && !primaryWordId) return [];
+  // When a focus word is required, pull a wider pool and filter to sentences
+  // that actually contain it — the cache can hold sentences that merely shared
+  // this primary_word_id without using the word.
   let q = supabase
     .from('generated_sentences')
     .select('*')
     .eq('direction', direction)
     .eq('is_excluded', false)
     .order('last_shown_at', { ascending: true, nullsFirst: true })
-    .limit(NEEDED);
+    .limit(mustContainForms.length ? 40 : NEEDED);
   q = grammarId ? q.eq('grammar_point_id', grammarId) : q.eq('primary_word_id', primaryWordId!);
   const { data } = await q;
-  return data ?? [];
+  let rows = data ?? [];
+  if (mustContainForms.length) rows = rows.filter((r: any) => sentenceHasWord(r.sentence_sv, mustContainForms));
+  return rows.slice(0, NEEDED);
 }
 
 export async function POST(req: Request) {
@@ -263,9 +294,15 @@ export async function POST(req: Request) {
 
   const cacheGrammarId = (mode === 'targeted' && body.wordId) ? null : grammarId;
 
+  // Targeted-word practice: the focus word must appear in every sentence.
+  const targetWord = (mode === 'targeted' && body.wordId)
+    ? (vocab.find((w: any) => w?.id === body.wordId) ?? null)
+    : null;
+  const targetForms = targetWord ? wordForms(targetWord) : [];
+
   const [cachedEnToSv, cachedSvToEn] = await Promise.all([
-    fetchCached(supabase, 'en_to_sv', cacheGrammarId, primaryWordId),
-    fetchCached(supabase, 'sv_to_en', cacheGrammarId, primaryWordId),
+    fetchCached(supabase, 'en_to_sv', cacheGrammarId, primaryWordId, targetForms),
+    fetchCached(supabase, 'sv_to_en', cacheGrammarId, primaryWordId, targetForms),
   ]);
 
   const enToSvNeeded = NEEDED - cachedEnToSv.length;
@@ -280,22 +317,32 @@ export async function POST(req: Request) {
     const grammarTitle = grammarPoint?.title ?? '';
     const grammarDesc  = grammarPoint?.description ?? '';
 
+    // For targeted-word practice, the word must appear in EVERY sentence.
+    const requireWord = targetWord
+      ? ` Crucially, EVERY sentence MUST naturally contain the Swedish word "${targetWord.lemma}" (an inflected form of it is fine) — it is the focus word being drilled.`
+      : '';
+
     const parts: string[] = [];
     const outKeys: string[] = [];
     if (enToSvNeeded > 0) {
-      parts.push(hasGrammarFocus
-        ? `Generate exactly ${enToSvNeeded} English→Swedish sentence(s): naturally exercise the grammar focus, draw only from the listed vocabulary plus basic function words.`
-        : `Generate exactly ${enToSvNeeded} English→Swedish sentence(s): naturally use the listed target vocabulary in everyday sentences. Use ONLY simple grammar the learner has already met — do not introduce or explain any new grammar structure. Draw only from the listed vocabulary plus basic function words.`);
+      parts.push((targetWord
+        ? `Generate exactly ${enToSvNeeded} English→Swedish sentence(s) using simple, already-learned grammar; draw only from the listed vocabulary plus basic function words.`
+        : hasGrammarFocus
+          ? `Generate exactly ${enToSvNeeded} English→Swedish sentence(s): naturally exercise the grammar focus, draw only from the listed vocabulary plus basic function words.`
+          : `Generate exactly ${enToSvNeeded} English→Swedish sentence(s): naturally use the listed target vocabulary in everyday sentences. Use ONLY simple grammar the learner has already met — do not introduce or explain any new grammar structure. Draw only from the listed vocabulary plus basic function words.`)
+        + requireWord);
       outKeys.push(`"en_to_sv": [{"sentence_en": "English prompt", "sentence_sv": "correct Swedish"}]`);
     }
     if (svToEnNeeded > 0) {
-      parts.push(`Generate exactly ${svToEnNeeded} Swedish→English sentence(s): ORIGINAL simple A1/A2 Swedish. NEVER copy from any real book or identifiable text — hard copyright constraint.`);
+      parts.push(`Generate exactly ${svToEnNeeded} Swedish→English sentence(s): ORIGINAL simple A1/A2 Swedish. NEVER copy from any real book or identifiable text — hard copyright constraint.` + requireWord);
       outKeys.push(`"sv_to_en": [{"sentence_sv": "Swedish prompt", "sentence_en": "correct English"}]`);
     }
 
-    const focusLine = hasGrammarFocus
-      ? `Grammar focus: "${grammarTitle}" — ${grammarDesc}`
-      : `Focus: drilling the listed vocabulary. Keep every sentence within basic, already-learned grammar — do not introduce any new grammar structure.`;
+    const focusLine = targetWord
+      ? `Focus word to drill in EVERY sentence, both directions: "${targetWord.lemma}". Keep grammar simple and already-learned.`
+      : hasGrammarFocus
+        ? `Grammar focus: "${grammarTitle}" — ${grammarDesc}`
+        : `Focus: drilling the listed vocabulary. Keep every sentence within basic, already-learned grammar — do not introduce any new grammar structure.`;
 
     const prompt = `You are a Swedish tutor generating practice exercises.
 Learner vocabulary: ${vocabList}
@@ -311,15 +358,20 @@ Return ONLY valid JSON, no markdown: { ${outKeys.join(', ')} }`;
         return NextResponse.json({ error: 'generation_failed' }, { status: 502 });
     }
 
+    // Drop any generated sentence that ignored the focus-word requirement.
+    const keepsWord = (s: any) => sentenceHasWord(s?.sentence_sv, targetForms);
+    const genEnToSv = (generated.en_to_sv ?? []).filter(keepsWord);
+    const genSvToEn = (generated.sv_to_en ?? []).filter(keepsWord);
+
     const toInsert = [
-      ...(generated.en_to_sv ?? []).slice(0, enToSvNeeded).map((s: any) => ({
+      ...genEnToSv.slice(0, enToSvNeeded).map((s: any) => ({
         grammar_point_id: cacheGrammarId,
         primary_word_id:  primaryWordId,
         direction: 'en_to_sv',
         sentence_sv: s.sentence_sv,
         sentence_en: s.sentence_en,
       })),
-      ...(generated.sv_to_en ?? []).slice(0, svToEnNeeded).map((s: any) => ({
+      ...genSvToEn.slice(0, svToEnNeeded).map((s: any) => ({
         grammar_point_id: cacheGrammarId,
         primary_word_id:  primaryWordId,
         direction: 'sv_to_en',
