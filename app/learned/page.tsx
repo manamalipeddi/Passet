@@ -30,7 +30,7 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
   // Grammar
   const { data: gpRows } = await supabase
     .from('user_grammar_progress')
-    .select('grammar_point_id, status, created_at, times_correct, times_wrong, grammar_points(id, title, cefr_level, description, sequence_order)');
+    .select('grammar_point_id, status, times_correct, times_wrong, grammar_points(id, title, cefr_level, description, sequence_order)');
   const grammar = (gpRows ?? [])
     .filter((r: any) => r.grammar_points)
     .sort((a: any, b: any) => (a.grammar_points.sequence_order ?? 99) - (b.grammar_points.sequence_order ?? 99));
