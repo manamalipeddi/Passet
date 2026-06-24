@@ -50,3 +50,9 @@ a{color:var(--red-dark);text-decoration:none;font-weight:700;}
 .seq-num{font-size:11px;font-weight:700;color:var(--text-muted);width:22px;flex-shrink:0;}
 .progress-bar-track{height:8px;background:#EDE0D0;border:2px solid var(--ink);border-radius:999px;overflow:hidden;margin:6px 0 2px;}
 .progress-bar-fill{height:100%;background:var(--red);border-radius:999px;}
+.sec>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;}
+.sec>summary::-webkit-details-marker{display:none;}
+.sec>summary>.tag{margin-bottom:0;}
+.sec-count{font-size:12px;font-weight:700;color:var(--text-muted);}
+.sec>summary::after{content:'▾';margin-left:auto;font-size:13px;color:var(--text-muted);}
+.sec:not([open])>summary::after{content:'▸';}

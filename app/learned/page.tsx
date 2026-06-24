@@ -14,7 +14,7 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
   // the PostgREST join returning the source column (schema cache can lag).
   let wq = supabase
     .from('user_progress')
-    .select('word_id, status, next_review_date, times_correct, times_wrong, words(id, lemma, pos, gender)');
+    .select('word_id, status, next_review_date, times_correct, times_wrong, words(id, lemma, pos, gender, translation)');
   if (filter !== 'all') wq = wq.eq('status', filter);
   const [{ data: wordRows }, { data: uaRows }] = await Promise.all([
     wq,
@@ -48,8 +48,8 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
       <p className="muted">{words.length} curriculum words · {heardWords.length} heard · {grammar.length} grammar points</p>
 
       {/* ── Grammar ──────────────────────────────────────────── */}
-      <div className="card" style={{ marginTop: 24 }}>
-        <span className="tag">grammar</span>
+      <details className="card sec" style={{ marginTop: 24 }} open>
+        <summary><span className="tag">grammar</span><span className="sec-count">{grammar.length}</span></summary>
         <div style={{ marginTop: 10 }}>
           {grammar.length === 0 && <p className="muted">No grammar points started yet.</p>}
           {grammar.map((r: any) => {
@@ -72,38 +72,37 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
             );
           })}
         </div>
-      </div>
+      </details>
 
       {/* ── Words ────────────────────────────────────────────── */}
-      <div className="card" style={{ marginTop: 18 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-          <span className="tag">words</span>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {filterLinks.map(({ label, value }) => (
-              <a key={value} href={`/learned?filter=${value}`}>
-                <span style={{
-                  display: 'inline-block', padding: '3px 12px', borderRadius: 999,
-                  fontSize: 12, fontWeight: 700, cursor: 'pointer',
-                  border: `2px solid var(--ink)`,
-                  background: filter === value ? 'var(--ink)' : 'transparent',
-                  color: filter === value ? '#fff' : 'var(--ink)',
-                }}>
-                  {label}
-                </span>
-              </a>
-            ))}
-          </div>
+      <details className="card sec" style={{ marginTop: 18 }} open>
+        <summary><span className="tag">words</span><span className="sec-count">{words.length}</span></summary>
+
+        <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+          {filterLinks.map(({ label, value }) => (
+            <a key={value} href={`/learned?filter=${value}`}>
+              <span style={{
+                display: 'inline-block', padding: '3px 12px', borderRadius: 999,
+                fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                border: `2px solid var(--ink)`,
+                background: filter === value ? 'var(--ink)' : 'transparent',
+                color: filter === value ? '#fff' : 'var(--ink)',
+              }}>
+                {label}
+              </span>
+            </a>
+          ))}
         </div>
 
         <div style={{ marginTop: 12 }}>
           {words.length === 0 && <p className="muted">No words match this filter.</p>}
           {words.map((r: any) => <WordRow key={r.word_id} r={r} />)}
         </div>
-      </div>
+      </details>
 
       {/* ── Words I've heard ─────────────────────────────────── */}
-      <div className="card" style={{ marginTop: 18 }}>
-        <span className="tag" style={{ background: '#FFF7E6' }}>words i've heard</span>
+      <details className="card sec" style={{ marginTop: 18 }} open>
+        <summary><span className="tag" style={{ background: '#FFF7E6' }}>words i've heard</span><span className="sec-count">{heardWords.length}</span></summary>
         <div style={{ marginTop: 12 }}>
           {heardWords.length === 0 ? (
             <p className="muted">
@@ -115,7 +114,7 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
             heardWords.map((r: any) => <WordRow key={r.word_id} r={r} />)
           )}
         </div>
-      </div>
+      </details>
     </div>
   );
 }
@@ -128,8 +127,9 @@ function WordRow({ r }: { r: any }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1.5px dashed var(--line)' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ fontWeight: 700 }}>{w.lemma}</span>{' '}
-        <span className="muted">{w.pos}{w.gender ? `, ${w.gender}` : ''}</span>
+        <span style={{ fontWeight: 700 }}>{w.lemma}</span>
+        {w.translation && <span>: {w.translation}</span>}
+        <span className="muted">, {w.pos}{w.gender ? `, ${w.gender}` : ''}</span>
       </div>
       <span className={`status-pill ${r.status}`}>{r.status === 'known' ? 'mastered' : r.status}</span>
       <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>due {due}</span>

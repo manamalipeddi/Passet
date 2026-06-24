@@ -34,6 +34,7 @@ export async function POST(req: Request) {
       forms:      body.forms ?? {},
       example_sv: body.example_sv ?? null,
       example_en: body.example_en ?? null,
+      translation: body.definition ?? null,
       source:     'user_added',
     })
     .select()
