@@ -6,6 +6,10 @@ type Mode = 'daily' | 'extra' | 'learn' | 'targeted' | 'words' | 'grammar';
 type Vocab = { id: string; lemma: string; pos: string; gender: string | null; forms: any; example_sv: string; example_en: string };
 type Exercise = { prompt: string; reference: string; direction: 'en_to_sv' | 'sv_to_en'; sentence_id?: string };
 type CarryItem = { direction: 'en_to_sv' | 'sv_to_en'; prompt: string; reference: string; userAnswer: string; correct: boolean };
+// Tense-priming study aid for a grammar-focused En->Sv question (see /api/lesson/variants)
+type TenseForm = { tense: string; en: string; sv: string; isMain?: boolean };
+type NounForm  = { lemma: string; gloss?: string; gender?: string; indefSing?: string; defSing?: string; indefPlural?: string; defPlural?: string };
+type VariantData = { forms: TenseForm[]; nouns: NounForm[] };
 
 const LOADING_MSG: Record<Mode, string> = {
   daily:    "Putting today's words together…",
@@ -57,6 +61,9 @@ function LessonInner() {
   const [explaining, setExplaining]   = useState(false);
   // Questions flagged (by index) to carry into the tutor chat at the end of the set
   const [carryover, setCarryover]     = useState<Record<number, CarryItem>>({});
+  // En->Sv tense study aid: only for grammar-focused sets; cached per sentence_id.
+  const [grammarFocused, setGrammarFocused] = useState(false);
+  const [variants, setVariants] = useState<Record<string, VariantData | 'loading' | 'error'>>({});
 
   useEffect(() => {
     fetch('/api/lesson/generate', {
@@ -74,11 +81,30 @@ function LessonInner() {
           ...data.exercises.sv_to_en.map((e: any) => ({ ...e, direction: 'sv_to_en' as const })),
         ];
         setEx(ex);
+        setGrammarFocused(!!data.grammarFocused);
         // 'extra' and 'words' have no grammar intro — drop straight into sentences
         setStage(mode === 'extra' || mode === 'words' ? 'exercise' : 'vocab');
       })
       .catch(() => setStage('error'));
   }, [mode, wordId, grammarId]);
+
+  // Lazily fetch (and cache) the tense study aid for the current En->Sv question.
+  useEffect(() => {
+    if (stage !== 'exercise') return;
+    const cur = exercises[idx];
+    const sid = cur?.sentence_id;
+    if (!cur || cur.direction !== 'en_to_sv' || !grammarFocused || !sid) return;
+    if (variants[sid]) return; // already loading or loaded
+    setVariants((p) => ({ ...p, [sid]: 'loading' }));
+    fetch('/api/lesson/variants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sentence_id: sid }),
+    })
+      .then((r) => r.json())
+      .then((d) => setVariants((p) => ({ ...p, [sid]: Array.isArray(d?.forms) ? d : 'error' })))
+      .catch(() => setVariants((p) => ({ ...p, [sid]: 'error' })));
+  }, [stage, idx, grammarFocused, exercises, variants]);
 
   async function submitAnswer() {
     setChecking(true);
@@ -211,6 +237,109 @@ function LessonInner() {
     setStage('done');
   }
 
+  // Tense study aid for the current En->Sv question. Before the answer is
+  // submitted we list the other tense forms in English only (attempt phase);
+  // after submitting we reveal every form's Swedish, grouped so forms that
+  // collapse to the same Swedish sit together, plus a noun form table.
+  function renderTenseAid(revealed: boolean) {
+    const cur = exercises[idx];
+    const sid = cur?.sentence_id;
+    if (!cur || cur.direction !== 'en_to_sv' || !grammarFocused || !sid) return null;
+    const v = variants[sid];
+
+    const box = (children: React.ReactNode) => (
+      <div style={{
+        marginTop: 12, padding: 14,
+        border: '2.5px solid var(--ink)', borderRadius: 12,
+        background: 'var(--surface)', fontSize: 14, lineHeight: 1.6,
+      }}>{children}</div>
+    );
+    const heading = (text: string) => (
+      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-muted)', marginBottom: 8 }}>{text}</div>
+    );
+
+    if (v === 'loading' || v === undefined) {
+      return box(<span className="muted" style={{ fontStyle: 'italic' }}>Loading tense forms…</span>);
+    }
+    if (v === 'error') return null; // don't block practice on a study-aid hiccup
+    const forms = v.forms ?? [];
+    if (!forms.length) return null;
+
+    // Attempt phase: the other tenses to try in your head (main is the prompt above).
+    if (!revealed) {
+      const others = forms.filter((f) => !f.isMain);
+      if (!others.length) return null;
+      return box(
+        <>
+          {heading('Also translate these in your head — not graded')}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {others.map((f, i) => (
+              <div key={i}>{f.en} <span className="muted" style={{ fontSize: 12 }}>· {f.tense}</span></div>
+            ))}
+          </div>
+        </>,
+      );
+    }
+
+    // Revealed: group English forms by identical Swedish (first-seen order).
+    const groups: { sv: string; ens: TenseForm[] }[] = [];
+    const at = new Map<string, number>();
+    for (const f of forms) {
+      const key = (f.sv ?? '').trim().toLowerCase();
+      if (!at.has(key)) { at.set(key, groups.length); groups.push({ sv: f.sv, ens: [] }); }
+      groups[at.get(key)!].ens.push(f);
+    }
+
+    return box(
+      <>
+        {heading('Same sentence across tenses')}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {groups.map((g, gi) => (
+            <div key={gi} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {g.ens.map((e, ei) => (
+                <div key={ei} style={{ fontWeight: e.isMain ? 700 : 400 }}>
+                  {e.en} <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>· {e.tense}{e.isMain ? ' · graded' : ''}</span>
+                </div>
+              ))}
+              <div style={{ fontWeight: 700, color: 'var(--green)' }}>→ {g.sv}</div>
+              {g.ens.length > 1 && (
+                <div className="muted" style={{ fontSize: 11, fontStyle: 'italic' }}>
+                  Swedish doesn’t distinguish these — same sentence.
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {v.nouns?.length > 0 && (
+          <div style={{ marginTop: 14, borderTop: '1.5px dashed var(--ink)', paddingTop: 10 }}>
+            {heading('Noun forms (not quizzed)')}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {v.nouns.map((n, ni) => (
+                <div key={ni}>
+                  <div style={{ fontWeight: 700, marginBottom: 2 }}>
+                    {n.lemma}{n.gloss ? <span className="muted" style={{ fontWeight: 400 }}> — {n.gloss}</span> : null}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr', gap: '2px 12px', fontSize: 13 }}>
+                    <span />
+                    <span className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em' }}>indefinite</span>
+                    <span className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em' }}>definite</span>
+                    <span className="muted" style={{ fontSize: 11 }}>singular</span>
+                    <span>{n.indefSing ?? '—'}</span>
+                    <span>{n.defSing ?? '—'}</span>
+                    <span className="muted" style={{ fontSize: 11 }}>plural</span>
+                    <span>{n.indefPlural ?? '—'}</span>
+                    <span>{n.defPlural ?? '—'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </>,
+    );
+  }
+
   if (stage === 'loading') return <div className="wrap"><div className="card">{LOADING_MSG[mode]}</div></div>;
   if (stage === 'error')   return <div className="wrap"><div className="card">Couldn't reach the tutor. Check your connection and try again.</div></div>;
   if (stage === 'handoff') return <div className="wrap"><div className="card">Saving your flagged questions to the tutor chat…</div></div>;
@@ -251,6 +380,7 @@ function LessonInner() {
               {checking ? 'Checking…' : 'Check my answer'}
             </button>
           )}
+          {!feedback && renderTenseAid(false)}
           {feedback && (
             <>
               <div className={`feedback ${feedback.correct ? 'ok' : 'fix'}`}>
@@ -274,6 +404,8 @@ function LessonInner() {
                   </div>
                 )}
               </div>
+
+              {renderTenseAid(true)}
 
               {/* Dig deeper / flag for chat */}
               <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap', gap: 10, marginTop: 12 }}>

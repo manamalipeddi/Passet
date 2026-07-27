@@ -409,5 +409,11 @@ Return ONLY valid JSON, no markdown: { ${outKeys.join(', ')} }`;
     })),
   };
 
-  return NextResponse.json({ vocab, grammarPoint, exercises, mode });
+  // Grammar-focused sets get the En->Sv tense-priming study aid. Word-drill
+  // sessions (vocab-only, and targeted-word where grammar is only incidental
+  // context) stay plain. Mirrors cacheGrammarId: en_to_sv sentences saved with a
+  // grammar_point_id are exactly the ones eligible for variants.
+  const grammarFocused = !!cacheGrammarId;
+
+  return NextResponse.json({ vocab, grammarPoint, exercises, mode, grammarFocused });
 }
