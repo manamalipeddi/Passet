@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/supabase';
 import { callClaudeChat } from '@/lib/anthropic';
+import { formatLastSession } from '@/lib/relativeTime';
 
 export async function POST(req: Request) {
   const { message } = await req.json().catch(() => ({}));
@@ -12,6 +13,7 @@ export async function POST(req: Request) {
     { data: gpRows },
     { count: wordCount },
     { data: history },
+    { data: streak },
   ] = await Promise.all([
     supabase.from('user_grammar_progress').select('grammar_points(title, cefr_level)'),
     supabase.from('user_progress').select('*', { count: 'exact', head: true }),
@@ -20,6 +22,7 @@ export async function POST(req: Request) {
       .select('role, content')
       .order('created_at', { ascending: false })
       .limit(20),
+    supabase.from('streak_state').select('last_session_at').eq('id', 1).single(),
   ]);
 
   const gpList = (gpRows ?? [])
@@ -32,7 +35,8 @@ export async function POST(req: Request) {
 
 Student context:
 - Words in practice queue: ${wordCount ?? 0}
-- Grammar points introduced: ${gpList || 'none yet'}`;
+- Grammar points introduced: ${gpList || 'none yet'}
+- Last practice session: ${formatLastSession(streak?.last_session_at)}`;
 
   const conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [
     ...(history ?? []).reverse().map((m: any) => ({
@@ -41,6 +45,14 @@ Student context:
     })),
     { role: 'user', content: message },
   ];
+
+  // Persist the user's message BEFORE calling Claude. Two reasons:
+  // 1. If the tutor call fails, the question is still saved (never silently
+  //    lost — important for the lesson "study in chat" hand-off).
+  // 2. It gets an earlier created_at than the reply below, so the two always
+  //    sort in the right order on the chat page (they used to share one
+  //    timestamp, which let the reply render above the question).
+  await supabase.from('chat_messages').insert({ role: 'user', content: message });
 
   let rawReply: string;
   try {
@@ -61,11 +73,9 @@ Student context:
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-  // Persist both turns together
-  await supabase.from('chat_messages').insert([
-    { role: 'user',      content: message },
-    { role: 'assistant', content: reply   },
-  ]);
+  // User turn was already saved above; now save the tutor's reply (later
+  // timestamp keeps it after the question).
+  await supabase.from('chat_messages').insert({ role: 'assistant', content: reply });
 
   return NextResponse.json({ reply, suggestedWords });
 }

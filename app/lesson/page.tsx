@@ -190,15 +190,18 @@ function LessonInner() {
       body: JSON.stringify({ mode }),
     }).then((r) => r.json()).catch(() => ({}));
 
-    // If anything was flagged, drop it into the tutor chat and jump there
+    // If anything was flagged, drop it into the tutor chat and jump there.
+    // The chat route saves the question before it calls the tutor, so even if
+    // the reply fails we still go to chat with the question waiting (rather than
+    // silently losing it to the done screen).
     if (items.length) {
-      const ok = await fetch('/api/chat', {
+      await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: composeStudyMessage(items) }),
-      }).then((r) => r.ok).catch(() => false);
-      if (ok) { window.location.assign('/chat'); return; }
-      // chat send failed — fall through to the normal done screen
+      }).catch(() => {});
+      window.location.assign('/chat');
+      return;
     }
 
     setStreak(data.streak ?? null);

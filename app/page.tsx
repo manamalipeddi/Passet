@@ -1,5 +1,6 @@
 import { getServiceClient } from '@/lib/supabase';
 import { GRAMMAR_INTERVAL } from '@/lib/config';
+import { formatLastSession } from '@/lib/relativeTime';
 import HearAWord from './components/HearAWord';
 
 const GREETINGS = [
@@ -50,6 +51,7 @@ export default async function Home() {
 
   const touched    = (learning ?? 0) + (known ?? 0);
   const streak     = state?.current_streak ?? 0;
+  const lastSession = formatLastSession(state?.last_session_at);
   const allDone  = (grammarStarted ?? 0) >= (grammarTotal ?? 1) && touched >= (totalWords ?? 1);
   const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
 
@@ -102,6 +104,7 @@ export default async function Home() {
   return (
     <div className="wrap">
       <h1 style={{ fontSize: 26, lineHeight: 1.3, margin: 0 }}>{greeting}</h1>
+      <p className="muted" style={{ margin: '6px 0 0', fontSize: 13 }}>Last session: {lastSession}</p>
 
       <div className="row2" style={{ marginTop: 18 }}>
         <div className="stat">

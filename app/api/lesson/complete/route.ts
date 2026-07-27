@@ -10,6 +10,11 @@ export async function POST(req: Request) {
   const supabase = getServiceClient();
   const today = new Date().toISOString().slice(0, 10);
 
+  // Stamp the exact moment of this session on every completion (even a repeat
+  // session on a day already counted). last_practiced_date drives the streak;
+  // last_session_at is the precise "when did I last practice" other views/agents read.
+  await supabase.from('streak_state').update({ last_session_at: new Date().toISOString() }).eq('id', 1);
+
   // After a strong run of practice, nudge toward new material.
   let ready_for_new = false;
   let recent_accuracy = 0;
