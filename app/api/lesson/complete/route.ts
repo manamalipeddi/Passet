@@ -41,11 +41,37 @@ export async function POST(req: Request) {
     }
   }
 
+  // Weakest spot — the single lowest-accuracy word or grammar point, so the
+  // finish screen can recommend what to shore up next time. Mirrors the
+  // dashboard's "trouble spots" logic: only things missed at least twice,
+  // ranked by accuracy (worst first), ties broken by most attempts.
+  const WRONG_THRESHOLD = 2;
+  const [{ data: wordProgRows }, { data: grammarProgRows }] = await Promise.all([
+    supabase.from('user_progress').select('word_id, times_correct, times_wrong, words(id, lemma)'),
+    supabase.from('user_grammar_progress').select('grammar_point_id, times_correct, times_wrong, grammar_points(id, title)'),
+  ]);
+  type Weak = { kind: 'grammar' | 'word'; id: string; name: string; accuracy: number; attempts: number };
+  const weakItems: Weak[] = [
+    ...(grammarProgRows ?? [])
+      .filter((g: any) => g.grammar_points && (g.times_wrong ?? 0) >= WRONG_THRESHOLD)
+      .map((g: any) => {
+        const c = g.times_correct ?? 0, w = g.times_wrong ?? 0;
+        return { kind: 'grammar' as const, id: g.grammar_points.id, name: g.grammar_points.title, accuracy: c / (c + w), attempts: c + w };
+      }),
+    ...(wordProgRows ?? [])
+      .filter((p: any) => p.words && (p.times_wrong ?? 0) >= WRONG_THRESHOLD)
+      .map((p: any) => {
+        const c = p.times_correct ?? 0, w = p.times_wrong ?? 0;
+        return { kind: 'word' as const, id: p.words.id, name: p.words.lemma, accuracy: c / (c + w), attempts: c + w };
+      }),
+  ].sort((a, b) => a.accuracy - b.accuracy || b.attempts - a.attempts);
+  const weakest = weakItems[0] ?? null;
+
   const { data: state } = await supabase.from('streak_state').select('*').eq('id', 1).single();
   if (!state) return NextResponse.json({ error: 'no_state' }, { status: 500 });
 
   if (state.last_practiced_date === today) {
-    return NextResponse.json({ streak: state.current_streak, already_done: true, ready_for_new, recent_accuracy });
+    return NextResponse.json({ streak: state.current_streak, already_done: true, ready_for_new, recent_accuracy, weakest });
   }
 
   let streak = 1;
@@ -61,5 +87,5 @@ export async function POST(req: Request) {
     .update({ current_streak: streak, last_practiced_date: today, total_days: state.total_days + 1 })
     .eq('id', 1);
 
-  return NextResponse.json({ streak, already_done: false, ready_for_new, recent_accuracy });
+  return NextResponse.json({ streak, already_done: false, ready_for_new, recent_accuracy, weakest });
 }

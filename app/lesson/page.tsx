@@ -57,6 +57,8 @@ function LessonInner() {
   const [alreadyDone, setDone]  = useState(false);
   const [readyForNew, setReady] = useState(false);
   const [accuracy, setAccuracy] = useState(0);
+  // Weakest word/grammar point to recommend practicing next time (null if none yet).
+  const [weakest, setWeakest] = useState<{ kind: 'word' | 'grammar'; id: string; name: string; accuracy: number } | null>(null);
   const [explanation, setExplanation] = useState<string | null>(null);
   const [explaining, setExplaining]   = useState(false);
   // Questions flagged (by index) to carry into the tutor chat at the end of the set
@@ -234,6 +236,7 @@ function LessonInner() {
     setDone(!!data.already_done);
     setReady(!!data.ready_for_new);
     setAccuracy(data.recent_accuracy ?? 0);
+    setWeakest(data.weakest ?? null);
     setStage('done');
   }
 
@@ -468,7 +471,7 @@ function LessonInner() {
   const doneHead = mode === 'learn' ? 'Added to your curriculum.'
     : mode === 'targeted' ? 'Targeted practice done. 🎯'
     : (mode === 'extra' || alreadyDone) ? 'Nice, extra reps in the bank.'
-    : "Snyggt! Today's paus is done.";
+    : 'Snyggt! Session finished.';
 
   return (
     <div className="wrap">
@@ -490,6 +493,30 @@ function LessonInner() {
             </p>
             <a href="/lesson?mode=learn">
               <button className="btn btn-secondary">Learn something new →</button>
+            </a>
+          </div>
+        )}
+        {/* Next time: if the algo hasn't cleared you for new material, point at
+            your weakest word or grammar point instead. */}
+        {!readyForNew && weakest && (
+          <div style={{
+            marginTop: 16,
+            padding: 16,
+            border: '3px solid var(--ink)',
+            borderRadius: 12,
+            background: 'var(--mustard)',
+            boxShadow: '4px 4px 0 var(--ink)',
+          }}>
+            <p style={{ margin: '0 0 4px', fontWeight: 700 }}>
+              Next time: shore up your weakest {weakest.kind === 'grammar' ? 'grammar point' : 'word'}
+            </p>
+            <p style={{ margin: '0 0 10px', fontSize: 14 }}>
+              <strong>{weakest.name}</strong> · {Math.round(weakest.accuracy * 100)}% right so far
+            </p>
+            <a href={weakest.kind === 'grammar'
+              ? `/lesson?mode=targeted&grammarId=${weakest.id}`
+              : `/lesson?mode=targeted&wordId=${weakest.id}`}>
+              <button className="btn btn-primary">Practice {weakest.name} →</button>
             </a>
           </div>
         )}
