@@ -178,7 +178,7 @@ export default async function Home() {
         </div>
         <div className="stat">
           <div className="num">{touched}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {totalWords ?? 0}{startedPct !== null ? ` (${startedPct}%)` : ''}</span></div>
-          <div className="lbl">words started · {known ?? 0}{masteredPct !== null ? ` (${masteredPct}%)` : ''} mastered</div>
+          <div className="lbl">words started<br />{known ?? 0}{masteredPct !== null ? ` (${masteredPct}%)` : ''} mastered</div>
         </div>
       </div>
 
