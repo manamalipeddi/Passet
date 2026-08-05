@@ -48,6 +48,7 @@ async function fetchCached(
     .select('*')
     .eq('direction', direction)
     .eq('is_excluded', false)
+    .lt('times_correct', 4)               // retire sentences answered right 4 times
     .order('last_shown_at', { ascending: true, nullsFirst: true })
     .limit(mustContainForms.length ? 40 : NEEDED);
   q = grammarId ? q.eq('grammar_point_id', grammarId) : q.eq('primary_word_id', primaryWordId!);

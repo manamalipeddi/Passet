@@ -50,6 +50,8 @@ export default async function Home() {
   const nextGrammar = nextGpData?.[0] ?? null;
 
   const touched    = (learning ?? 0) + (known ?? 0);
+  const startedPct  = totalWords ? Math.round((touched / totalWords) * 100) : null;
+  const masteredPct = touched ? Math.round(((known ?? 0) / touched) * 100) : null;
   const streak     = state?.current_streak ?? 0;
   const lastSession = formatLastSession(state?.last_session_at);
   const allDone  = (grammarStarted ?? 0) >= (grammarTotal ?? 1) && touched >= (totalWords ?? 1);
@@ -101,6 +103,69 @@ export default async function Home() {
   const nextIsGrammar      = sinceGrammar >= GRAMMAR_INTERVAL && !!nextGrammar;
   const lessonsTilGrammar  = Math.max(GRAMMAR_INTERVAL - sinceGrammar, 0);
 
+  // Previews of what "Practice words" / "Practice grammar" will tackle next.
+  // These mirror the selection logic in app/api/lesson/generate/route.ts so the
+  // note under each button matches the session it launches.
+  const previewList = (arr: string[], n = 3) =>
+    arr.slice(0, n).join(', ') + (arr.length > n ? '…' : '');
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Words: SRS-due first (curriculum prioritized), topped up with the
+  // least-recently-practiced started words. Mirrors mode='words'.
+  const { data: dueWordRows } = await supabase
+    .from('user_progress')
+    .select('word_id, words(lemma, source)')
+    .lte('next_review_date', today)
+    .order('next_review_date')
+    .limit(15);
+  let wordPick = (dueWordRows ?? [])
+    .sort((a: any, b: any) =>
+      (a.words?.source === 'curriculum' ? 0 : 1) - (b.words?.source === 'curriculum' ? 0 : 1))
+    .slice(0, 6);
+  const dueWordCount = wordPick.length;
+  if (wordPick.length < 6) {
+    const pickedIds = wordPick.map((p: any) => p.word_id);
+    let tq = supabase
+      .from('user_progress')
+      .select('word_id, words(lemma, source)')
+      .order('last_reviewed_at', { ascending: true, nullsFirst: true })
+      .limit(6 + pickedIds.length);
+    if (pickedIds.length) tq = tq.not('word_id', 'in', `(${pickedIds.join(',')})`);
+    const { data: extra } = await tq;
+    wordPick = [...wordPick, ...(extra ?? [])].slice(0, 6);
+  }
+  const wordLemmas = wordPick.map((p: any) => p.words?.lemma).filter(Boolean);
+  const wordsNote = wordLemmas.length
+    ? dueWordCount > 0
+      ? `${dueWordCount} due for review · ${previewList(wordLemmas)}`
+      : `Revisiting · ${previewList(wordLemmas)}`
+    : 'No words started yet';
+
+  // Grammar: due point first, else the introduced point touched least recently.
+  // Mirrors mode='grammar' (never introduces new points).
+  const { data: dueGp } = await supabase
+    .from('user_grammar_progress')
+    .select('grammar_point_id, grammar_points(title)')
+    .lte('next_review_date', today)
+    .order('next_review_date')
+    .limit(1);
+  let grammarPick: any = dueGp?.[0] ?? null;
+  const grammarDue = !!grammarPick;
+  if (!grammarPick) {
+    const { data: anyGp } = await supabase
+      .from('user_grammar_progress')
+      .select('grammar_point_id, grammar_points(title)')
+      .order('last_reviewed_at', { ascending: true, nullsFirst: true })
+      .limit(1);
+    grammarPick = anyGp?.[0] ?? null;
+  }
+  const grammarPreviewTitle = grammarPick?.grammar_points?.title ?? null;
+  const grammarNote = grammarPreviewTitle
+    ? grammarDue
+      ? `Due for review · ${grammarPreviewTitle}`
+      : `Revisiting · ${grammarPreviewTitle}`
+    : 'No grammar started yet — learn one first';
+
   return (
     <div className="wrap">
       <h1 style={{ fontSize: 26, lineHeight: 1.3, margin: 0 }}>{greeting}</h1>
@@ -112,8 +177,8 @@ export default async function Home() {
           <div className="lbl">day streak</div>
         </div>
         <div className="stat">
-          <div className="num">{touched}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {totalWords ?? 0}</span></div>
-          <div className="lbl">words started · {known ?? 0} mastered</div>
+          <div className="num">{touched}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {totalWords ?? 0}{startedPct !== null ? ` (${startedPct}%)` : ''}</span></div>
+          <div className="lbl">words started · {known ?? 0}{masteredPct !== null ? ` (${masteredPct}%)` : ''} mastered</div>
         </div>
       </div>
 
@@ -162,9 +227,11 @@ export default async function Home() {
         <div className="row2">
           <a href="/lesson?mode=words" style={{ display: 'block' }}>
             <button className="btn btn-primary">Practice words</button>
+            <p style={{ margin: '6px 2px 0', fontSize: 11, lineHeight: 1.35, color: 'rgba(250,243,231,0.6)' }}>{wordsNote}</p>
           </a>
           <a href="/lesson?mode=grammar" style={{ display: 'block' }}>
             <button className="btn btn-primary">Practice grammar</button>
+            <p style={{ margin: '6px 2px 0', fontSize: 11, lineHeight: 1.35, color: 'rgba(250,243,231,0.6)' }}>{grammarNote}</p>
           </a>
         </div>
       </details>

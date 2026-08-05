@@ -4,7 +4,7 @@ import { callClaude } from '@/lib/anthropic';
 import { updateSrs } from '@/lib/srs';
 
 export async function POST(req: Request) {
-  const { direction, prompt, reference, userAnswer, wordIds = [], grammarPointId, grammarTitle } = await req.json();
+  const { direction, prompt, reference, userAnswer, wordIds = [], grammarPointId, grammarTitle, sentenceId } = await req.json();
   const supabase = getServiceClient();
 
   const evalPrompt = `You are an encouraging Swedish tutor. The learner was asked to translate ${direction === 'en_to_sv' ? 'this English sentence into Swedish' : 'this Swedish sentence into English'}: "${prompt}".
@@ -55,6 +55,22 @@ Judge their answer on meaning and correctness, not just an exact string match ag
           times_wrong: gprog.times_wrong + (result.correct ? 0 : 1),
         })
         .eq('grammar_point_id', grammarPointId);
+    }
+  }
+
+  // Count a correct answer against the cached sentence; at 4 it's retired from
+  // practice rotation (generate route filters times_correct < 4).
+  if (sentenceId && result.correct) {
+    const { data: sent } = await supabase
+      .from('generated_sentences')
+      .select('times_correct')
+      .eq('id', sentenceId)
+      .single();
+    if (sent) {
+      await supabase
+        .from('generated_sentences')
+        .update({ times_correct: (sent.times_correct ?? 0) + 1 })
+        .eq('id', sentenceId);
     }
   }
 

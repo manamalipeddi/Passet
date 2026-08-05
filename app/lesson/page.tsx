@@ -122,6 +122,7 @@ function LessonInner() {
         wordIds:        vocab.map((v) => v.id),
         grammarPointId: grammarPoint?.id,
         grammarTitle:   grammarPoint?.title,
+        sentenceId:     current.sentence_id,
       }),
     });
     setFeedback(await res.json());
