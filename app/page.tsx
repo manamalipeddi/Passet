@@ -2,6 +2,7 @@ import { getServiceClient } from '@/lib/supabase';
 import { GRAMMAR_INTERVAL } from '@/lib/config';
 import { formatLastSession } from '@/lib/relativeTime';
 import HearAWord from './components/HearAWord';
+import RefreshOnRestore from './components/RefreshOnRestore';
 
 const GREETINGS = [
   'Hej Manasa! Välkommen tillbaka.',
@@ -168,6 +169,7 @@ export default async function Home() {
 
   return (
     <div className="wrap">
+      <RefreshOnRestore />
       <h1 style={{ fontSize: 26, lineHeight: 1.3, margin: 0 }}>{greeting}</h1>
       <p className="muted" style={{ margin: '6px 0 0', fontSize: 13 }}>Last session: {lastSession}</p>
 
