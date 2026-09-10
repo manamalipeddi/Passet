@@ -1,9 +1,10 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 type Use = { sv: string; en: string };
 type Enrichment = { uses: Use[]; note: string };
 type ShortEnrichment = { note?: string; use?: Use } | null;
+type EnrichState = Enrichment | 'loading' | null;   // null = tried, none available
 
 type LearnItem = {
   id: string; lemma: string; pos: string | null; gender: string | null;
@@ -21,6 +22,11 @@ export default function VocabPage() {
   const [quiz, setQuiz]   = useState<QuizItem[]>([]);
   const [meta, setMeta]   = useState<{ introducedNow: number; dailyTargetMet: boolean }>({ introducedNow: 0, dailyTargetMet: false });
 
+  // Enrichment is fetched lazily per word and prefetched a word ahead, so the
+  // session itself loads instantly instead of waiting on Claude for every word.
+  const [enrichMap, setEnrichMap] = useState<Record<string, EnrichState>>({});
+  const requested = useRef<Set<string>>(new Set());
+
   // Learn phase
   const [li, setLi] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
@@ -35,18 +41,52 @@ export default function VocabPage() {
   // Done
   const [streak, setStreak] = useState<number | null>(null);
 
+  function prefetchEnrichment(id?: string) {
+    if (!id || requested.current.has(id)) return;
+    requested.current.add(id);
+    setEnrichMap((m) => ({ ...m, [id]: 'loading' }));
+    fetch('/api/vocab/enrich', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wordId: id }),
+    })
+      .then((r) => r.json())
+      .then((d) => setEnrichMap((m) => ({ ...m, [id]: (d?.enrichment as Enrichment) ?? null })))
+      .catch(() => setEnrichMap((m) => ({ ...m, [id]: null })));
+  }
+
   useEffect(() => {
     fetch('/api/vocab/session', { method: 'POST' })
       .then((r) => r.json())
       .then((data) => {
         if (data.error) { setStage('error'); return; }
-        setLearn(data.learn ?? []);
+        const learnItems: LearnItem[] = data.learn ?? [];
+        setLearn(learnItems);
         setQuiz(data.quiz ?? []);
         setMeta({ introducedNow: data.introducedNow ?? 0, dailyTargetMet: !!data.dailyTargetMet });
-        setStage((data.learn ?? []).length ? 'learn' : (data.quiz ?? []).length ? 'quiz' : 'done');
+        // Seed the map with any already-cached enrichment so we don't refetch it.
+        const seed: Record<string, EnrichState> = {};
+        for (const w of learnItems) if (w.enrichment) { seed[w.id] = w.enrichment; requested.current.add(w.id); }
+        setEnrichMap(seed);
+        setStage(learnItems.length ? 'learn' : (data.quiz ?? []).length ? 'quiz' : 'done');
       })
       .catch(() => setStage('error'));
   }, []);
+
+  // Prefetch the current + next word's enrichment while it's being read.
+  useEffect(() => {
+    if (stage !== 'learn') return;
+    prefetchEnrichment(learn[li]?.id);
+    prefetchEnrichment(learn[li + 1]?.id);
+  }, [stage, li, learn]);
+
+  // In the quiz, make sure new words' reminders are ready (review words already
+  // carry a cached short reminder from the server).
+  useEffect(() => {
+    if (stage !== 'quiz') return;
+    if (quiz[qi]?.isNew) prefetchEnrichment(quiz[qi].id);
+    if (quiz[qi + 1]?.isNew) prefetchEnrichment(quiz[qi + 1].id);
+  }, [stage, qi, quiz]);
 
   function nextLearn() {
     setPicked(null);
@@ -95,6 +135,7 @@ export default function VocabPage() {
   if (stage === 'learn') {
     const w = learn[li];
     const revealed = picked !== null;
+    const enr = enrichMap[w.id];
     return (
       <div className="wrap">
         <span className="tag">new words</span>
@@ -127,26 +168,32 @@ export default function VocabPage() {
 
           {revealed && (
             <>
-              {w.enrichment && (w.enrichment.note || w.enrichment.uses?.length > 0) && (
-                <div style={{ marginTop: 16, padding: 14, border: '2.5px solid var(--ink)', borderRadius: 12, background: 'var(--bg)' }}>
-                  {w.enrichment.note && (
-                    <p style={{ margin: '0 0 10px', fontSize: 14, lineHeight: 1.5 }}>💡 {w.enrichment.note}</p>
-                  )}
-                  {w.enrichment.uses?.length > 0 && (
-                    <>
-                      <div className="eyebrow" style={{ marginBottom: 6 }}>In use</div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        {w.enrichment.uses.map((u, i) => (
-                          <div key={i} style={{ fontSize: 14, lineHeight: 1.4 }}>
-                            <div style={{ fontWeight: 600 }}>{u.sv}</div>
-                            <div className="muted">{u.en}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
+              <div style={{ marginTop: 16, padding: 14, border: '2.5px solid var(--ink)', borderRadius: 12, background: 'var(--bg)' }}>
+                {(enr === 'loading' || enr === undefined) && (
+                  <p className="muted" style={{ margin: 0, fontStyle: 'italic' }}>Loading examples…</p>
+                )}
+                {enr && enr !== 'loading' && (enr.note || enr.uses?.length > 0) && (
+                  <>
+                    {enr.note && <p style={{ margin: '0 0 10px', fontSize: 14, lineHeight: 1.5 }}>💡 {enr.note}</p>}
+                    {enr.uses?.length > 0 && (
+                      <>
+                        <div className="eyebrow" style={{ marginBottom: 6 }}>In use</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {enr.uses.map((u, i) => (
+                            <div key={i} style={{ fontSize: 14, lineHeight: 1.4 }}>
+                              <div style={{ fontWeight: 600 }}>{u.sv}</div>
+                              <div className="muted">{u.en}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
+                {enr === null && (
+                  <p className="muted" style={{ margin: 0 }}><strong>{w.lemma}</strong> — {w.answer}</p>
+                )}
+              </div>
               <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={nextLearn}>
                 {li + 1 < learn.length ? 'Next word →' : quiz.length ? 'Start the quiz →' : 'Finish →'}
               </button>
@@ -160,6 +207,11 @@ export default function VocabPage() {
   // ── QUIZ PHASE ───────────────────────────────────────────────────────────
   if (stage === 'quiz') {
     const item = quiz[qi];
+    // Prefer the full enrichment we prefetched; fall back to the server's short reminder.
+    const full = enrichMap[item.id];
+    const short: ShortEnrichment = (full && full !== 'loading')
+      ? { note: full.note, use: full.uses?.[0] }
+      : item.enrichment;
     return (
       <div className="wrap">
         <span className="tag" style={{ background: 'var(--green)', color: '#FAF3E7' }}>quiz</span>
@@ -200,13 +252,13 @@ export default function VocabPage() {
                 )}
               </div>
 
-              {item.enrichment && (item.enrichment.note || item.enrichment.use) && (
+              {short && (short.note || short.use) && (
                 <div style={{ marginTop: 12, padding: 12, border: '2px dashed var(--ink)', borderRadius: 10, fontSize: 13, lineHeight: 1.5 }}>
-                  {item.enrichment.note && <div>💡 {item.enrichment.note}</div>}
-                  {item.enrichment.use && (
-                    <div style={{ marginTop: item.enrichment.note ? 6 : 0 }}>
-                      <span style={{ fontWeight: 600 }}>{item.enrichment.use.sv}</span>
-                      <span className="muted"> — {item.enrichment.use.en}</span>
+                  {short.note && <div>💡 {short.note}</div>}
+                  {short.use && (
+                    <div style={{ marginTop: short.note ? 6 : 0 }}>
+                      <span style={{ fontWeight: 600 }}>{short.use.sv}</span>
+                      <span className="muted"> — {short.use.en}</span>
                     </div>
                   )}
                 </div>

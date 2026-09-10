@@ -33,7 +33,7 @@ export async function callClaudeChat(
     .join('\n');
 }
 
-export async function callClaude(prompt: string, maxTokens = 1000): Promise<string> {
+export async function callClaude(prompt: string, maxTokens = 1000, model = 'claude-sonnet-4-6'): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set in the environment.');
 
@@ -45,7 +45,7 @@ export async function callClaude(prompt: string, maxTokens = 1000): Promise<stri
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
+      model,
       max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }],
     }),

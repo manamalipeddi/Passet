@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/supabase';
-import { callClaude } from '@/lib/anthropic';
 
 // Vocabulary session — pure word acquisition, no sentence practice (that's the
 // grammar flow's job). A session has two phases the client walks through:
@@ -11,8 +10,9 @@ import { callClaude } from '@/lib/anthropic';
 //               words. English is shown, the learner types the Swedish word.
 //
 // New words are drawn user-added ("heard a word") first, then curriculum by
-// frequency rank. Enrichment (a few example uses + a memorable note) is generated
-// once per word and cached on words.enrichment forever after.
+// frequency rank. This endpoint is deliberately DB-only so it returns in ~1s:
+// enrichment (example uses + a memorable note) is generated lazily and cached by
+// /api/vocab/enrich, which the client prefetches per word while it's being read.
 
 const NEW_PER_DAY  = 10;
 const REVIEW_COUNT = 10;
@@ -39,55 +39,6 @@ function shortEnrichment(e: any): { note?: string; use?: { sv: string; en: strin
   const note = typeof e.note === 'string' ? e.note : undefined;
   if (!use && !note) return null;
   return { note, use };
-}
-
-// Generate enrichment for a batch of words in a single Claude call, then cache
-// each onto words.enrichment. Best-effort: on any failure we log and move on —
-// the word simply gets no enrichment this time and can be filled in later.
-async function enrichWords(
-  supabase: ReturnType<typeof getServiceClient>,
-  words: WordRow[],
-): Promise<Map<string, any>> {
-  const out = new Map<string, any>();
-  const missing = words.filter((w) => !w.enrichment);
-  for (const w of words) if (w.enrichment) out.set(w.id, w.enrichment);
-  if (!missing.length) return out;
-
-  const list = missing
-    .map((w, i) => `${i + 1}. "${w.lemma}" (${w.pos ?? 'word'}${w.gender ? `, ${w.gender}` : ''}) — means "${w.translation ?? ''}"`)
-    .join('\n');
-
-  const prompt = `You are a Swedish tutor helping a learner memorise vocabulary fast. For each Swedish word below, produce:
-- "uses": up to 5 short, natural example sentences or common phrases USING the word, each with its English translation. Keep them A1/A2 simple and everyday. Vary the inflected forms where natural.
-- "note": one short, memorable or interesting fact about the word (a mnemonic, a false-friend warning, a cultural note, a cognate link, etc.) that helps it stick in memory.
-
-Words:
-${list}
-
-Return ONLY valid JSON, no markdown, as an array in the SAME ORDER as the words:
-[{"lemma": "...", "uses": [{"sv": "...", "en": "..."}], "note": "..."}]`;
-
-  try {
-    const parsed = JSON.parse(await callClaude(prompt, 2000));
-    const arr: any[] = Array.isArray(parsed) ? parsed : [];
-    // Match by lemma (case-insensitive), falling back to positional order.
-    for (let i = 0; i < missing.length; i++) {
-      const w = missing[i];
-      const byLemma = arr.find((e) => String(e?.lemma ?? '').toLowerCase() === w.lemma.toLowerCase());
-      const e = byLemma ?? arr[i];
-      const uses = Array.isArray(e?.uses)
-        ? e.uses.filter((u: any) => u?.sv && u?.en).slice(0, 5).map((u: any) => ({ sv: String(u.sv), en: String(u.en) }))
-        : [];
-      const note = typeof e?.note === 'string' ? e.note : '';
-      if (!uses.length && !note) continue;
-      const enrichment = { uses, note };
-      out.set(w.id, enrichment);
-      await supabase.from('words').update({ enrichment }).eq('id', w.id);
-    }
-  } catch (err) {
-    console.error('[vocab/session] enrichment generation failed:', err);
-  }
-  return out;
 }
 
 export async function POST() {
@@ -146,9 +97,6 @@ export async function POST() {
       .eq('id', 1);
   }
 
-  // ── Enrichment for the new words (batched, cached) ───────────────────────
-  const enrichMap = await enrichWords(supabase, newWords);
-
   // ── Multiple-choice distractors from other words' translations ───────────
   const { data: pool } = await supabase
     .from('words')
@@ -180,7 +128,7 @@ export async function POST() {
     gender: w.gender,
     answer: (w.translation ?? '').trim(),
     options: optionsFor(w),
-    enrichment: enrichMap.get(w.id) ?? null,
+    enrichment: w.enrichment ?? null,   // cached only; else fetched lazily by the client
   }));
 
   // ── Quiz review words: SRS-due first, topped up by least-recently-seen ────
@@ -223,7 +171,9 @@ export async function POST() {
     pos: w.pos,
     gender: w.gender,
     isNew,
-    enrichment: shortEnrichment(isNew ? enrichMap.get(w.id) : w.enrichment),
+    // Cached short reminder if we have it; new words' enrichment is filled in by
+    // the client (from what it prefetched during the learn phase).
+    enrichment: shortEnrichment(w.enrichment),
   });
 
   const quiz = shuffle([
