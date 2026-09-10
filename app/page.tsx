@@ -1,5 +1,4 @@
 import { getServiceClient } from '@/lib/supabase';
-import { GRAMMAR_INTERVAL } from '@/lib/config';
 import { formatLastSession } from '@/lib/relativeTime';
 import HearAWord from './components/HearAWord';
 import RefreshOnRestore from './components/RefreshOnRestore';
@@ -24,8 +23,6 @@ export default async function Home() {
     { count: learning },
     { count: known },
     { count: totalWords },
-    { count: grammarStarted },
-    { count: grammarTotal },
     { data: recent },
     { data: startedGpRows },
     { data: wordProgRows },
@@ -35,8 +32,6 @@ export default async function Home() {
     supabase.from('user_progress').select('*', { count: 'exact', head: true }).eq('status', 'learning'),
     supabase.from('user_progress').select('*', { count: 'exact', head: true }).eq('status', 'known'),
     supabase.from('words').select('*', { count: 'exact', head: true }),
-    supabase.from('user_grammar_progress').select('*', { count: 'exact', head: true }),
-    supabase.from('grammar_points').select('*', { count: 'exact', head: true }),
     supabase.from('attempts').select('*').order('created_at', { ascending: false }).limit(60),
     supabase.from('user_grammar_progress').select('grammar_point_id'),
     supabase.from('user_progress').select('word_id, times_correct, times_wrong, words(id, lemma, translation, pos)'),
@@ -55,7 +50,6 @@ export default async function Home() {
   const masteredPct = touched ? Math.round(((known ?? 0) / touched) * 100) : null;
   const streak     = state?.current_streak ?? 0;
   const lastSession = formatLastSession(state?.last_session_at);
-  const allDone  = (grammarStarted ?? 0) >= (grammarTotal ?? 1) && touched >= (totalWords ?? 1);
   const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
 
   // Worth a second look — wrong answers from the last 3 practice sessions,
@@ -99,50 +93,9 @@ export default async function Home() {
     .sort((a, b) => a.accuracy - b.accuracy || b.attempts - a.attempts)
     .slice(0, 10);
 
-  // Grammar pacing — a new grammar point only every GRAMMAR_INTERVAL vocab lessons.
-  const sinceGrammar       = state?.vocab_lessons_since_grammar ?? 0;
-  const nextIsGrammar      = sinceGrammar >= GRAMMAR_INTERVAL && !!nextGrammar;
-  const lessonsTilGrammar  = Math.max(GRAMMAR_INTERVAL - sinceGrammar, 0);
-
-  // Previews of what "Practice words" / "Practice grammar" will tackle next.
-  // These mirror the selection logic in app/api/lesson/generate/route.ts so the
-  // note under each button matches the session it launches.
-  const previewList = (arr: string[], n = 3) =>
-    arr.slice(0, n).join(', ') + (arr.length > n ? '…' : '');
   const today = new Date().toISOString().slice(0, 10);
 
-  // Words: SRS-due first (curriculum prioritized), topped up with the
-  // least-recently-practiced started words. Mirrors mode='words'.
-  const { data: dueWordRows } = await supabase
-    .from('user_progress')
-    .select('word_id, words(lemma, source)')
-    .lte('next_review_date', today)
-    .order('next_review_date')
-    .limit(15);
-  let wordPick = (dueWordRows ?? [])
-    .sort((a: any, b: any) =>
-      (a.words?.source === 'curriculum' ? 0 : 1) - (b.words?.source === 'curriculum' ? 0 : 1))
-    .slice(0, 6);
-  const dueWordCount = wordPick.length;
-  if (wordPick.length < 6) {
-    const pickedIds = wordPick.map((p: any) => p.word_id);
-    let tq = supabase
-      .from('user_progress')
-      .select('word_id, words(lemma, source)')
-      .order('last_reviewed_at', { ascending: true, nullsFirst: true })
-      .limit(6 + pickedIds.length);
-    if (pickedIds.length) tq = tq.not('word_id', 'in', `(${pickedIds.join(',')})`);
-    const { data: extra } = await tq;
-    wordPick = [...wordPick, ...(extra ?? [])].slice(0, 6);
-  }
-  const wordLemmas = wordPick.map((p: any) => p.words?.lemma).filter(Boolean);
-  const wordsNote = wordLemmas.length
-    ? dueWordCount > 0
-      ? `${dueWordCount} due for review · ${previewList(wordLemmas)}`
-      : `Revisiting · ${previewList(wordLemmas)}`
-    : 'No words started yet';
-
-  // Grammar: due point first, else the introduced point touched least recently.
+  // Grammar preview: due point first, else the introduced point touched least recently.
   // Mirrors mode='grammar' (never introduces new points).
   const { data: dueGp } = await supabase
     .from('user_grammar_progress')
@@ -194,43 +147,40 @@ export default async function Home() {
         boxShadow: '7px 7px 0 var(--mustard)',
       }} open>
         <summary><span className="tag" style={{ background: 'var(--mustard)', color: 'var(--ink)' }}>learn</span></summary>
-        {nextIsGrammar ? (
-          <>
-            <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
-              Next up: {nextGrammar.title}
-            </p>
-            <p style={{ margin: '0 0 22px', fontSize: 12, color: 'rgba(250,243,231,0.5)' }}>
-              <span className={`cefr-tag cefr-${nextGrammar.cefr_level}`}>{nextGrammar.cefr_level}</span>
-              {' '}· new grammar point #{nextGrammar.sequence_order}
-            </p>
-          </>
-        ) : !allDone ? (
-          <>
-            <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
-              Next up: new words
-            </p>
-            <p style={{ margin: '0 0 22px', fontSize: 12, color: 'rgba(250,243,231,0.5)' }}>
-              {nextGrammar
-                ? `${lessonsTilGrammar} more word ${lessonsTilGrammar === 1 ? 'lesson' : 'lessons'}, then grammar — “${nextGrammar.title}”`
-                : 'All grammar introduced — building vocabulary'}
-            </p>
-          </>
-        ) : (
-          <p style={{ margin: '14px 0 22px', color: 'rgba(250,243,231,0.55)', fontSize: 14 }}>
-            All content introduced — keep practicing!
-          </p>
-        )}
-        <a href="/lesson?mode=learn">
+
+        {/* Vocabulary — the fast word-building flow: 10 new words + a review quiz */}
+        <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
+          Build your vocabulary
+        </p>
+        <p style={{ margin: '0 0 14px', fontSize: 12, color: 'rgba(250,243,231,0.5)' }}>
+          10 new words a day, then a spaced-repetition quiz
+        </p>
+        <a href="/vocab">
           <button className="btn btn-secondary" style={{ boxShadow: '4px 4px 0 rgba(250,243,231,0.15)' }}>
-            {nextIsGrammar ? 'Learn new grammar →' : 'Learn new words →'}
+            Practice vocabulary →
           </button>
         </a>
-        <div style={{ height: 10 }} />
+
+        <div style={{ height: 16 }} />
+
+        {/* Grammar — learn the next point, or drill ones already met */}
         <div className="row2">
-          <a href="/lesson?mode=words" style={{ display: 'block' }}>
-            <button className="btn btn-primary">Practice words</button>
-            <p style={{ margin: '6px 2px 0', fontSize: 11, lineHeight: 1.35, color: 'rgba(250,243,231,0.6)' }}>{wordsNote}</p>
-          </a>
+          {nextGrammar ? (
+            <a href="/lesson?mode=learn" style={{ display: 'block' }}>
+              <button className="btn btn-primary">Learn new grammar</button>
+              <p style={{ margin: '6px 2px 0', fontSize: 11, lineHeight: 1.35, color: 'rgba(250,243,231,0.6)' }}>
+                Next: {nextGrammar.title}
+                {nextGrammar.cefr_level ? ` · ${nextGrammar.cefr_level}` : ''}
+              </p>
+            </a>
+          ) : (
+            <div>
+              <button className="btn btn-primary" disabled style={{ opacity: 0.6 }}>Learn new grammar</button>
+              <p style={{ margin: '6px 2px 0', fontSize: 11, lineHeight: 1.35, color: 'rgba(250,243,231,0.6)' }}>
+                All grammar introduced
+              </p>
+            </div>
+          )}
           <a href="/lesson?mode=grammar" style={{ display: 'block' }}>
             <button className="btn btn-primary">Practice grammar</button>
             <p style={{ margin: '6px 2px 0', fontSize: 11, lineHeight: 1.35, color: 'rgba(250,243,231,0.6)' }}>{grammarNote}</p>
