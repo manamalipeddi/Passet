@@ -1,27 +1,25 @@
 import { NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/supabase';
+import { topUpItemBuffer } from '@/lib/vocabItems';
 
 // Vocabulary session — pure word acquisition, no sentence practice (that's the
-// grammar flow's job). A session has two phases the client walks through:
+// grammar flow's job). Two phases the client walks through:
 //
-//   1. LEARN  — up to NEW_PER_DAY brand-new words. Each shows the Swedish word
-//               with three English options (recognition), then full enrichment.
-//   2. QUIZ   — NEW_PER_DAY new words + REVIEW_COUNT spaced-repetition review
-//               words. English is shown, the learner types the Swedish word.
+//   1. LEARN — base words met for the first time, as a see-Swedish / pick-English
+//              multiple choice, with enrichment shown after.
+//   2. QUIZ  — up to NEW_PER_DAY newly-introduced ITEMS + REVIEW_COUNT spaced-
+//              repetition review items. English is shown, you type the Swedish.
 //
-// New words are drawn user-added ("heard a word") first, then curriculum by
-// frequency rank. This endpoint is deliberately DB-only so it returns in ~1s:
-// enrichment (example uses + a memorable note) is generated lazily and cached by
-// /api/vocab/enrich, which the client prefetches per word while it's being read.
+// Each word expands into several items (dictionary form + inflected forms +
+// phrases), each with its own SRS schedule (table vocab_items). Items are
+// generated ahead of time into a buffer (introduced=false) and promoted here, so
+// this endpoint stays DB-only and fast. New items are drawn user-added ("heard")
+// words first, then curriculum by frequency rank. A word's MCQ is shown the first
+// time any of its items is promoted; its other forms may follow on later days.
 
 const NEW_PER_DAY  = 10;
 const REVIEW_COUNT = 10;
-
-type WordRow = {
-  id: string; lemma: string; pos: string | null; gender: string | null;
-  translation: string | null; example_sv: string | null; example_en: string | null;
-  source: string | null; enrichment: any;
-};
+const BUFFER_MIN   = 20;   // below this, the client is told to top up the buffer
 
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
@@ -32,7 +30,6 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-// A short reminder shown as quiz feedback: the memorable note + one example use.
 function shortEnrichment(e: any): { note?: string; use?: { sv: string; en: string } } | null {
   if (!e || typeof e !== 'object') return null;
   const use = Array.isArray(e.uses) && e.uses[0] ? e.uses[0] : undefined;
@@ -41,71 +38,73 @@ function shortEnrichment(e: any): { note?: string; use?: { sv: string; en: strin
   return { note, use };
 }
 
+const ITEM_SELECT = '*, words!inner(rank, source, lemma, pos, gender, translation, enrichment)';
+
 export async function POST() {
   const supabase = getServiceClient();
   const today = new Date().toISOString().slice(0, 10);
 
-  // ── Daily new-word soft cap bookkeeping ──────────────────────────────────
+  // Daily new-item soft cap bookkeeping.
   const { data: st } = await supabase
-    .from('streak_state')
-    .select('vocab_new_date, vocab_new_today')
-    .eq('id', 1)
-    .single();
+    .from('streak_state').select('vocab_new_date, vocab_new_today').eq('id', 1).single();
   const newTodayBefore = st?.vocab_new_date === today ? (st?.vocab_new_today ?? 0) : 0;
 
-  // Words already in rotation — never re-introduce these as "new".
-  const { data: startedRows } = await supabase.from('user_progress').select('word_id');
-  const startedIds = (startedRows ?? []).map((r: any) => r.word_id);
-  const notStarted = startedIds.length ? `(${startedIds.join(',')})` : null;
-
-  // ── Pick up to NEW_PER_DAY brand-new words: user-added first, then rank ───
-  const WORD_COLS = 'id, lemma, pos, gender, translation, example_sv, example_en, source, enrichment';
-
-  let heardQ = supabase
-    .from('words')
-    .select(WORD_COLS)
-    .neq('source', 'curriculum')
-    .order('created_at', { ascending: true })
-    .limit(NEW_PER_DAY + startedIds.length);
-  if (notStarted) heardQ = heardQ.not('id', 'in', notStarted);
-  const { data: heardCands } = await heardQ;
-  let newWords: WordRow[] = (heardCands ?? []).filter((w: any) => !startedIds.includes(w.id)) as WordRow[];
-
-  if (newWords.length < NEW_PER_DAY) {
-    const need = NEW_PER_DAY - newWords.length;
-    const excludeIds = [...startedIds, ...newWords.map((w) => w.id)];
-    let curQ = supabase
-      .from('words')
-      .select(WORD_COLS)
-      .eq('source', 'curriculum')
-      .order('rank', { ascending: true })
-      .limit(need + excludeIds.length);
-    if (excludeIds.length) curQ = curQ.not('id', 'in', `(${excludeIds.join(',')})`);
-    const { data: curCands } = await curQ;
-    const curNew = (curCands ?? []).filter((w: any) => !excludeIds.includes(w.id)).slice(0, need) as WordRow[];
-    newWords = [...newWords, ...curNew];
+  // ── Pull the un-introduced buffer; generate more if it's short ────────────
+  const fetchBuffer = async () => {
+    const { data } = await supabase
+      .from('vocab_items').select(ITEM_SELECT).eq('introduced', false).limit(120);
+    return (data ?? []) as any[];
+  };
+  let buffer = await fetchBuffer();
+  if (buffer.length < NEW_PER_DAY) {
+    // Rare (backfill + background top-up normally keep this full). Generate
+    // synchronously just enough to run today's session.
+    await topUpItemBuffer(supabase, 3);
+    buffer = await fetchBuffer();
   }
 
-  // Register the new words in progress and advance the daily counter.
-  if (newWords.length) {
-    await supabase.from('user_progress').insert(
-      newWords.map((w) => ({ word_id: w.id, status: 'learning', next_review_date: today })),
-    );
+  // user-added words first, then curriculum by rank.
+  buffer.sort((a: any, b: any) =>
+    (a.words?.source === 'curriculum' ? 1 : 0) - (b.words?.source === 'curriculum' ? 1 : 0)
+    || (a.words?.rank ?? 1e9) - (b.words?.rank ?? 1e9));
+  const promote = buffer.slice(0, NEW_PER_DAY);
+  const promoteIds = promote.map((i) => i.id);
+
+  if (promoteIds.length) {
+    await supabase
+      .from('vocab_items')
+      .update({ introduced: true, next_review_date: today })
+      .in('id', promoteIds);
     await supabase
       .from('streak_state')
-      .update({ vocab_new_date: today, vocab_new_today: newTodayBefore + newWords.length })
+      .update({ vocab_new_date: today, vocab_new_today: newTodayBefore + promoteIds.length })
       .eq('id', 1);
   }
 
-  // ── Multiple-choice distractors from other words' translations ───────────
-  const { data: pool } = await supabase
-    .from('words')
-    .select('id, translation, pos')
-    .not('translation', 'is', null);
-  const newIdSet = new Set(newWords.map((w) => w.id));
-  const distractorPool = (pool ?? []).filter((w: any) => w.translation && !newIdSet.has(w.id));
+  // ── Base words met for the first time → the MCQ learn phase ───────────────
+  const promoteWordIds = [...new Set(promote.map((i) => i.word_id))];
+  let newBaseWords: any[] = [];
+  if (promoteWordIds.length) {
+    const { data: existingProg } = await supabase
+      .from('user_progress').select('word_id').in('word_id', promoteWordIds);
+    const known = new Set((existingProg ?? []).map((p: any) => p.word_id));
+    const newWordIds = promoteWordIds.filter((id) => !known.has(id));
+    if (newWordIds.length) {
+      await supabase.from('user_progress').insert(
+        newWordIds.map((id) => ({ word_id: id, status: 'learning', next_review_date: today })),
+      );
+      const { data: wrows } = await supabase
+        .from('words').select('id, lemma, pos, gender, translation, enrichment').in('id', newWordIds);
+      newBaseWords = wrows ?? [];
+    }
+  }
 
-  const optionsFor = (word: WordRow): string[] => {
+  // Multiple-choice distractors from other words' translations.
+  const { data: pool } = await supabase
+    .from('words').select('id, translation, pos').not('translation', 'is', null);
+  const newBaseSet = new Set(newBaseWords.map((w) => w.id));
+  const distractorPool = (pool ?? []).filter((w: any) => w.translation && !newBaseSet.has(w.id));
+  const optionsFor = (word: any): string[] => {
     const correct = (word.translation ?? '').trim();
     const samePos = shuffle(distractorPool.filter((w: any) => w.pos === word.pos && (w.translation ?? '').trim() !== correct));
     const anyPos  = shuffle(distractorPool.filter((w: any) => (w.translation ?? '').trim() !== correct));
@@ -121,75 +120,66 @@ export async function POST() {
     return shuffle([correct, ...picked]);
   };
 
-  const learn = newWords.map((w) => ({
-    id: w.id,
-    lemma: w.lemma,
-    pos: w.pos,
-    gender: w.gender,
+  const learn = newBaseWords.map((w) => ({
+    id: w.id, lemma: w.lemma, pos: w.pos, gender: w.gender,
     answer: (w.translation ?? '').trim(),
     options: optionsFor(w),
-    enrichment: w.enrichment ?? null,   // cached only; else fetched lazily by the client
+    enrichment: w.enrichment ?? null,
   }));
 
-  // ── Quiz review words: SRS-due first, topped up by least-recently-seen ────
-  const excludeFromReview = new Set(newWords.map((w) => w.id));
-  const excludeArr = [...excludeFromReview];
-  const notNew = excludeArr.length ? `(${excludeArr.join(',')})` : null;
-
+  // ── Review items: introduced, SRS-due, topped up by least-recently-seen ───
   let dueQ = supabase
-    .from('user_progress')
-    .select(`word_id, words(${WORD_COLS})`)
-    .lte('next_review_date', today)
+    .from('vocab_items').select(ITEM_SELECT)
+    .eq('introduced', true).lte('next_review_date', today)
     .order('next_review_date', { ascending: true })
-    .limit(REVIEW_COUNT + excludeArr.length);
-  if (notNew) dueQ = dueQ.not('word_id', 'in', notNew);
+    .limit(REVIEW_COUNT + promoteIds.length);
+  if (promoteIds.length) dueQ = dueQ.not('id', 'in', `(${promoteIds.join(',')})`);
   const { data: dueRows } = await dueQ;
-  let reviewProg = (dueRows ?? []).filter((r: any) => !excludeFromReview.has(r.word_id));
+  const promoteIdSet = new Set(promoteIds);
+  let review = (dueRows ?? []).filter((r: any) => !promoteIdSet.has(r.id));
 
-  if (reviewProg.length < REVIEW_COUNT) {
-    const have = new Set([...excludeArr, ...reviewProg.map((r: any) => r.word_id)]);
+  if (review.length < REVIEW_COUNT) {
+    const have = new Set([...promoteIds, ...review.map((r: any) => r.id)]);
     const haveArr = [...have];
-    let topupQ = supabase
-      .from('user_progress')
-      .select(`word_id, words(${WORD_COLS})`)
+    let topQ = supabase
+      .from('vocab_items').select(ITEM_SELECT)
+      .eq('introduced', true)
       .order('last_reviewed_at', { ascending: true, nullsFirst: true })
       .limit(REVIEW_COUNT + haveArr.length);
-    if (haveArr.length) topupQ = topupQ.not('word_id', 'in', `(${haveArr.join(',')})`);
-    const { data: extra } = await topupQ;
-    reviewProg = [...reviewProg, ...(extra ?? []).filter((r: any) => !have.has(r.word_id))];
+    if (haveArr.length) topQ = topQ.not('id', 'in', `(${haveArr.join(',')})`);
+    const { data: extra } = await topQ;
+    review = [...review, ...(extra ?? []).filter((r: any) => !have.has(r.id))];
   }
+  review = review.slice(0, REVIEW_COUNT);
 
-  const reviewWords: WordRow[] = reviewProg
-    .map((r: any) => r.words)
-    .filter((w: any): w is WordRow => !!w && !!(w.translation ?? '').trim())
-    .slice(0, REVIEW_COUNT);
-
-  // ── Build the quiz: new words + review words, shuffled together ───────────
-  const toQuizItem = (w: WordRow, isNew: boolean) => ({
-    id: w.id,
-    prompt: (w.translation ?? '').trim(),   // English shown
-    pos: w.pos,
-    gender: w.gender,
+  // ── Build the quiz (new + review, shuffled) ──────────────────────────────
+  const toQuiz = (it: any, isNew: boolean) => ({
+    id: it.id,               // vocab_items id — grade against this
+    wordId: it.word_id,
+    prompt: it.prompt_en,    // English shown
+    label: it.label,
+    kind: it.kind,
     isNew,
-    // Cached short reminder if we have it; new words' enrichment is filled in by
-    // the client (from what it prefetched during the learn phase).
-    enrichment: shortEnrichment(w.enrichment),
+    enrichment: shortEnrichment(it.words?.enrichment),
   });
-
   const quiz = shuffle([
-    ...newWords.filter((w) => (w.translation ?? '').trim()).map((w) => toQuizItem(w, true)),
-    ...reviewWords.map((w) => toQuizItem(w, false)),
+    ...promote.map((i) => toQuiz(i, true)),
+    ...review.map((i) => toQuiz(i, false)),
   ]);
 
   if (!learn.length && !quiz.length) {
     return NextResponse.json({ error: 'nothing_to_practice' }, { status: 400 });
   }
 
+  const { count: remaining } = await supabase
+    .from('vocab_items').select('*', { count: 'exact', head: true }).eq('introduced', false);
+
   return NextResponse.json({
     learn,
     quiz,
     newTodayBefore,
-    introducedNow: newWords.length,
-    dailyTargetMet: newTodayBefore + newWords.length >= NEW_PER_DAY,
+    introducedNow: promoteIds.length,
+    dailyTargetMet: newTodayBefore + promoteIds.length >= NEW_PER_DAY,
+    bufferLow: (remaining ?? 0) < BUFFER_MIN,
   });
 }

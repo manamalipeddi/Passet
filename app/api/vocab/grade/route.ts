@@ -3,11 +3,12 @@ import { getServiceClient } from '@/lib/supabase';
 import { callClaude } from '@/lib/anthropic';
 import { updateSrs } from '@/lib/srs';
 
-// Grade a typed Swedish answer for a vocabulary quiz item (English shown → type
-// Swedish). Cheap path first: a deterministic, typo- and diacritic-tolerant match
-// against the word's lemma and inflected forms is instant and free. Only when
-// that fails do we ask Claude to judge nuance (close? another word better?) and
-// leave a short comment. Either way the word's SRS schedule is updated.
+// Grade a typed Swedish answer for one vocab item (English shown → type Swedish).
+// Cheap path first: a deterministic, typo- and diacritic-tolerant match against
+// the item's answer (and any acceptable alternates) is instant and free. Only on
+// a miss do we ask Claude to judge nuance and leave a short comment. Either way
+// the item's SRS schedule is updated, and the parent word is marked mastered once
+// all of its items are.
 
 // Fold å/ä→a, ö→o, é→e, strip leading "att "/"en "/"ett ", collapse whitespace.
 function normalize(s: string): string {
@@ -15,7 +16,7 @@ function normalize(s: string): string {
     .toLowerCase()
     .trim()
     .replace(/^(att|en|ett)\s+/, '')
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')  // strip combining accents
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -29,113 +30,107 @@ function levenshtein(a: string, b: string): number {
   for (let i = 1; i <= m; i++) {
     const cur = [i];
     for (let j = 1; j <= n; j++) {
-      cur[j] = Math.min(
-        prev[j] + 1,
-        cur[j - 1] + 1,
-        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
-      );
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
     }
     prev = cur;
   }
   return prev[n];
 }
 
-// Single-token surface forms of a word (lemma + inflections), normalized.
-function acceptableForms(word: any): string[] {
-  const out = new Set<string>();
-  const add = (s: string) => {
-    for (const part of String(s).split('/')) {
-      const t = normalize(part);
-      if (t && !/\s/.test(t)) out.add(t);
-    }
-  };
-  if (word?.lemma) add(word.lemma);
-  const walk = (v: any, key?: string) => {
-    if (key === 'note') return;
-    if (typeof v === 'string') add(v);
-    else if (v && typeof v === 'object') for (const [k, val] of Object.entries(v)) walk(val, k);
-  };
-  walk(word?.forms);
-  return [...out];
-}
-
-function deterministicMatch(userAnswer: string, word: any): boolean {
+function deterministicMatch(userAnswer: string, accepted: string[]): boolean {
   const user = normalize(userAnswer);
   if (!user) return false;
-  const forms = acceptableForms(word);
-  for (const f of forms) {
-    if (user === f) return true;
-    // Typo tolerance: allow a single edit, but only on words long enough that a
-    // one-char slip can't turn one real word into a different one.
-    if (f.length >= 5 && levenshtein(user, f) <= 1) return true;
+  for (const ans of accepted) {
+    const a = normalize(ans);
+    if (!a) continue;
+    if (user === a) return true;
+    // Typo tolerance: one edit, but only when the phrase is long enough that a
+    // single slip can't collapse it into a genuinely different answer.
+    if (a.length >= 5 && levenshtein(user, a) <= 1) return true;
   }
   return false;
 }
 
 export async function POST(req: Request) {
-  const { wordId, userAnswer } = await req.json().catch(() => ({}));
-  if (!wordId) return NextResponse.json({ error: 'missing_word' }, { status: 400 });
+  const { itemId, userAnswer } = await req.json().catch(() => ({}));
+  if (!itemId) return NextResponse.json({ error: 'missing_item' }, { status: 400 });
 
   const supabase = getServiceClient();
-  const { data: word } = await supabase
-    .from('words')
-    .select('id, lemma, pos, gender, translation, forms')
-    .eq('id', wordId)
+  const { data: item } = await supabase
+    .from('vocab_items')
+    .select('*, words(lemma, translation)')
+    .eq('id', itemId)
     .single();
-  if (!word) return NextResponse.json({ error: 'word_not_found' }, { status: 404 });
+  if (!item) return NextResponse.json({ error: 'item_not_found' }, { status: 404 });
 
-  let correct = deterministicMatch(userAnswer ?? '', word);
+  const accepted = [item.answer_sv, ...(item.alt_sv ?? [])].filter(Boolean);
+  let correct = deterministicMatch(userAnswer ?? '', accepted);
   let comment = '';
 
   if (correct) {
     comment = 'Rätt! 🎉';
   } else {
-    // Nuanced fallback: is the answer acceptable, close, or is another word better?
-    const prompt = `You are an encouraging Swedish tutor grading a single-word vocabulary quiz.
-The learner was shown the English word/meaning: "${word.translation ?? ''}".
-The intended Swedish word is: "${word.lemma}"${word.gender ? ` (${word.gender})` : ''}.
+    const prompt = `You are an encouraging Swedish tutor grading one vocabulary item.
+The learner was shown the English prompt: "${item.prompt_en}"${item.label ? ` (${item.label})` : ''}.
+The expected Swedish answer is: "${item.answer_sv}"${item.alt_sv?.length ? ` (also acceptable: ${item.alt_sv.join(', ')})` : ''}.
 The learner typed: "${userAnswer ?? ''}".
 
-Judge whether the learner's Swedish is an acceptable answer for that English meaning (accept valid synonyms or alternate correct words, not just the intended one). If it's wrong but close (a typo, wrong form, or a near-miss), say so. If they used a real word that means something else, or that's a worse fit than another word, mention the better-suited word briefly. Return ONLY valid JSON, no markdown:
+Judge whether the learner's Swedish is an acceptable answer for that prompt (accept genuinely correct alternatives, not just the expected one). If it's wrong but close (a typo, wrong form, or near-miss), say so; if they used a real word meaning something else or a worse-fitting one, mention the better word briefly. Return ONLY valid JSON, no markdown:
 {"correct": true or false, "comment": "one short, encouraging sentence (max ~20 words)"}`;
-
     try {
       const result = JSON.parse(await callClaude(prompt, 300));
       correct = !!result.correct;
       comment = typeof result.comment === 'string' ? result.comment : '';
     } catch (err) {
       console.error('[vocab/grade] AI grading failed:', err);
-      // Fail closed: treat as incorrect but tell the truth so it's not silent.
-      comment = `The word is "${word.lemma}".`;
+      comment = `The answer is "${item.answer_sv}".`;
     }
   }
 
-  // Update the word's spaced-repetition schedule and tallies.
-  const { data: prog } = await supabase.from('user_progress').select('*').eq('word_id', wordId).single();
+  // Update this item's SRS + tallies.
+  const updated = updateSrs(item, correct);
+  await supabase
+    .from('vocab_items')
+    .update({
+      ...updated,
+      status: updated.interval_days > 10 ? 'known' : 'learning',
+      last_reviewed_at: new Date().toISOString(),
+      times_correct: (item.times_correct ?? 0) + (correct ? 1 : 0),
+      times_wrong: (item.times_wrong ?? 0) + (correct ? 0 : 1),
+    })
+    .eq('id', itemId);
+
+  // Roll the result up to the parent word: keep tallies live for the dashboard,
+  // and mark the word mastered only once every one of its items is mastered.
+  const { data: prog } = await supabase
+    .from('user_progress').select('*').eq('word_id', item.word_id).single();
   if (prog) {
-    const updated = updateSrs(prog, correct);
+    const thisNowKnown = updated.interval_days > 10;
+    const { data: siblings } = await supabase
+      .from('vocab_items').select('id, status').eq('word_id', item.word_id);
+    const allKnown = (siblings ?? []).every((s: any) =>
+      s.id === itemId ? thisNowKnown : s.status === 'known');
     await supabase
       .from('user_progress')
       .update({
-        ...updated,
-        status: updated.interval_days > 10 ? 'known' : 'learning',
+        status: allKnown ? 'known' : 'learning',
         last_reviewed_at: new Date().toISOString(),
-        times_correct: prog.times_correct + (correct ? 1 : 0),
-        times_wrong: prog.times_wrong + (correct ? 0 : 1),
+        times_correct: (prog.times_correct ?? 0) + (correct ? 1 : 0),
+        times_wrong: (prog.times_wrong ?? 0) + (correct ? 0 : 1),
       })
-      .eq('word_id', wordId);
+      .eq('word_id', item.word_id);
   }
 
   await supabase.from('attempts').insert({
     direction: 'en_to_sv',
-    prompt_text: word.translation ?? '',
-    target_text: word.lemma,
+    prompt_text: item.prompt_en,
+    target_text: item.answer_sv,
     user_answer: userAnswer ?? '',
     is_correct: correct,
     explanation: comment,
-    word_ids: [wordId],
+    word_ids: [item.word_id],
     grammar_point_ids: [],
   });
 
-  return NextResponse.json({ correct, comment, corrected: word.lemma });
+  return NextResponse.json({ correct, comment, corrected: item.answer_sv });
 }

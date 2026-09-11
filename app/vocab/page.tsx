@@ -11,7 +11,7 @@ type LearnItem = {
   answer: string; options: string[]; enrichment: Enrichment | null;
 };
 type QuizItem = {
-  id: string; prompt: string; pos: string | null; gender: string | null;
+  id: string; wordId: string; prompt: string; label: string | null; kind: string;
   isNew: boolean; enrichment: ShortEnrichment;
 };
 type Feedback = { correct: boolean; comment: string; corrected: string };
@@ -69,6 +69,9 @@ export default function VocabPage() {
         for (const w of learnItems) if (w.enrichment) { seed[w.id] = w.enrichment; requested.current.add(w.id); }
         setEnrichMap(seed);
         setStage(learnItems.length ? 'learn' : (data.quiz ?? []).length ? 'quiz' : 'done');
+        // If the item buffer is running low, top it up in the background so future
+        // sessions stay instant. Fire-and-forget — never blocks this session.
+        if (data.bufferLow) fetch('/api/vocab/topup', { method: 'POST' }).catch(() => {});
       })
       .catch(() => setStage('error'));
   }, []);
@@ -80,12 +83,12 @@ export default function VocabPage() {
     prefetchEnrichment(learn[li + 1]?.id);
   }, [stage, li, learn]);
 
-  // In the quiz, make sure new words' reminders are ready (review words already
-  // carry a cached short reminder from the server).
+  // In the quiz, make sure new items' reminders are ready (enrichment lives on
+  // the parent word; review items already carry a cached short reminder).
   useEffect(() => {
     if (stage !== 'quiz') return;
-    if (quiz[qi]?.isNew) prefetchEnrichment(quiz[qi].id);
-    if (quiz[qi + 1]?.isNew) prefetchEnrichment(quiz[qi + 1].id);
+    if (quiz[qi]?.isNew) prefetchEnrichment(quiz[qi].wordId);
+    if (quiz[qi + 1]?.isNew) prefetchEnrichment(quiz[qi + 1].wordId);
   }, [stage, qi, quiz]);
 
   function nextLearn() {
@@ -101,7 +104,7 @@ export default function VocabPage() {
       const res = await fetch('/api/vocab/grade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wordId: item.id, userAnswer: answer }),
+        body: JSON.stringify({ itemId: item.id, userAnswer: answer }),
       });
       const fb: Feedback = await res.json();
       setFeedback(fb);
@@ -207,8 +210,9 @@ export default function VocabPage() {
   // ── QUIZ PHASE ───────────────────────────────────────────────────────────
   if (stage === 'quiz') {
     const item = quiz[qi];
-    // Prefer the full enrichment we prefetched; fall back to the server's short reminder.
-    const full = enrichMap[item.id];
+    // Enrichment lives on the parent word. Prefer what we prefetched; fall back
+    // to the server's short reminder.
+    const full = enrichMap[item.wordId];
     const short: ShortEnrichment = (full && full !== 'loading')
       ? { note: full.note, use: full.uses?.[0] }
       : item.enrichment;
@@ -217,11 +221,10 @@ export default function VocabPage() {
         <span className="tag" style={{ background: 'var(--green)', color: '#FAF3E7' }}>quiz</span>
         <span className="pill" style={{ marginLeft: 8 }}>{qi + 1} of {quiz.length}</span>
         <div className="card">
-          <p className="muted" style={{ marginTop: 0 }}>Type the Swedish word for:</p>
+          <p className="muted" style={{ marginTop: 0 }}>Type the Swedish for:</p>
           <p style={{ fontSize: 24, fontWeight: 700, margin: '4px 0 2px' }}>{item.prompt}</p>
           <p className="muted" style={{ marginTop: 0 }}>
-            {item.pos}{item.gender ? `, ${item.gender}` : ''}
-            {item.isNew ? ' · from today' : ' · review'}
+            {item.label ? `${item.label} · ` : ''}{item.isNew ? 'from today' : 'review'}
           </p>
 
           <input
