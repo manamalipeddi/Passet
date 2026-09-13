@@ -1,9 +1,9 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 
 type Use = { sv: string; en: string };
 type Enrichment = { uses: Use[]; note: string };
-type ShortEnrichment = { note?: string; use?: Use } | null;
 type EnrichState = Enrichment | 'loading' | null;   // null = tried, none available
 
 type LearnItem = {
@@ -12,18 +12,32 @@ type LearnItem = {
 };
 type QuizItem = {
   id: string; wordId: string; prompt: string; label: string | null; kind: string;
-  isNew: boolean; enrichment: ShortEnrichment;
+  isNew: boolean; note: string | null; example: Use | null;
 };
-type Feedback = { correct: boolean; comment: string; corrected: string };
+type Feedback = {
+  correct: boolean; comment: string; corrected: string;
+  userAnswerMeaning: string | null; mastered: boolean;
+};
 
 export default function VocabPage() {
+  return (
+    <Suspense fallback={<div className="wrap"><div className="card">Loading…</div></div>}>
+      <VocabInner />
+    </Suspense>
+  );
+}
+
+function VocabInner() {
+  const params = useSearchParams();
+  const reviewOnly = params.get('mode') === 'review';
+
   const [stage, setStage] = useState<'loading' | 'learn' | 'quiz' | 'done' | 'error'>('loading');
   const [learn, setLearn] = useState<LearnItem[]>([]);
   const [quiz, setQuiz]   = useState<QuizItem[]>([]);
   const [meta, setMeta]   = useState<{ introducedNow: number; dailyTargetMet: boolean }>({ introducedNow: 0, dailyTargetMet: false });
 
-  // Enrichment is fetched lazily per word and prefetched a word ahead, so the
-  // session itself loads instantly instead of waiting on Claude for every word.
+  // Enrichment (word-level) is used only in the learn phase; fetched lazily and
+  // prefetched a word ahead so the session loads instantly.
   const [enrichMap, setEnrichMap] = useState<Record<string, EnrichState>>({});
   const requested = useRef<Set<string>>(new Set());
 
@@ -56,7 +70,11 @@ export default function VocabPage() {
   }
 
   useEffect(() => {
-    fetch('/api/vocab/session', { method: 'POST' })
+    fetch('/api/vocab/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: reviewOnly ? 'review' : 'new' }),
+    })
       .then((r) => r.json())
       .then((data) => {
         if (data.error) { setStage('error'); return; }
@@ -64,17 +82,14 @@ export default function VocabPage() {
         setLearn(learnItems);
         setQuiz(data.quiz ?? []);
         setMeta({ introducedNow: data.introducedNow ?? 0, dailyTargetMet: !!data.dailyTargetMet });
-        // Seed the map with any already-cached enrichment so we don't refetch it.
         const seed: Record<string, EnrichState> = {};
         for (const w of learnItems) if (w.enrichment) { seed[w.id] = w.enrichment; requested.current.add(w.id); }
         setEnrichMap(seed);
         setStage(learnItems.length ? 'learn' : (data.quiz ?? []).length ? 'quiz' : 'done');
-        // If the item buffer is running low, top it up in the background so future
-        // sessions stay instant. Fire-and-forget — never blocks this session.
         if (data.bufferLow) fetch('/api/vocab/topup', { method: 'POST' }).catch(() => {});
       })
       .catch(() => setStage('error'));
-  }, []);
+  }, [reviewOnly]);
 
   // Prefetch the current + next word's enrichment while it's being read.
   useEffect(() => {
@@ -82,14 +97,6 @@ export default function VocabPage() {
     prefetchEnrichment(learn[li]?.id);
     prefetchEnrichment(learn[li + 1]?.id);
   }, [stage, li, learn]);
-
-  // In the quiz, make sure new items' reminders are ready (enrichment lives on
-  // the parent word; review items already carry a cached short reminder).
-  useEffect(() => {
-    if (stage !== 'quiz') return;
-    if (quiz[qi]?.isNew) prefetchEnrichment(quiz[qi].wordId);
-    if (quiz[qi + 1]?.isNew) prefetchEnrichment(quiz[qi + 1].wordId);
-  }, [stage, qi, quiz]);
 
   function nextLearn() {
     setPicked(null);
@@ -110,7 +117,7 @@ export default function VocabPage() {
       setFeedback(fb);
       if (fb.correct) setScore((s) => s + 1);
     } catch {
-      setFeedback({ correct: false, comment: "Couldn't reach the tutor — try again.", corrected: '' });
+      setFeedback({ correct: false, comment: "Couldn't reach the tutor — try again.", corrected: '', userAnswerMeaning: null, mastered: false });
     } finally {
       setChecking(false);
     }
@@ -120,7 +127,6 @@ export default function VocabPage() {
     setFeedback(null);
     setAnswer('');
     if (qi + 1 < quiz.length) { setQi(qi + 1); return; }
-    // Session finished — record completion (streak, etc.)
     const data = await fetch('/api/lesson/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -131,7 +137,7 @@ export default function VocabPage() {
   }
 
   // ── LOADING / ERROR ──────────────────────────────────────────────────────
-  if (stage === 'loading') return <div className="wrap"><div className="card">Putting today's words together…</div></div>;
+  if (stage === 'loading') return <div className="wrap"><div className="card">{reviewOnly ? 'Pulling your review together…' : "Putting today's words together…"}</div></div>;
   if (stage === 'error')   return <div className="wrap"><div className="card">Couldn't load your words. Check your connection and try again.</div></div>;
 
   // ── LEARN PHASE ──────────────────────────────────────────────────────────
@@ -210,15 +216,9 @@ export default function VocabPage() {
   // ── QUIZ PHASE ───────────────────────────────────────────────────────────
   if (stage === 'quiz') {
     const item = quiz[qi];
-    // Enrichment lives on the parent word. Prefer what we prefetched; fall back
-    // to the server's short reminder.
-    const full = enrichMap[item.wordId];
-    const short: ShortEnrichment = (full && full !== 'loading')
-      ? { note: full.note, use: full.uses?.[0] }
-      : item.enrichment;
     return (
       <div className="wrap">
-        <span className="tag" style={{ background: 'var(--green)', color: '#FAF3E7' }}>quiz</span>
+        <span className="tag" style={{ background: 'var(--green)', color: '#FAF3E7' }}>{reviewOnly ? 'review' : 'quiz'}</span>
         <span className="pill" style={{ marginLeft: 8 }}>{qi + 1} of {quiz.length}</span>
         <div className="card">
           <p className="muted" style={{ marginTop: 0 }}>Type the Swedish for:</p>
@@ -246,22 +246,31 @@ export default function VocabPage() {
           {feedback && (
             <>
               <div className={`feedback ${feedback.correct ? 'ok' : 'fix'}`}>
-                <strong>{feedback.correct ? 'Rätt!' : 'Not quite.'}</strong> {feedback.comment}
-                {!feedback.correct && feedback.corrected && (
-                  <div style={{ marginTop: 8 }}>
-                    <div className="eyebrow">Answer</div>
-                    <div style={{ fontWeight: 700 }}>{feedback.corrected}</div>
+                <strong>{feedback.correct ? (feedback.mastered ? 'Mastered! 🏆' : 'Rätt!') : 'Not quite.'}</strong> {feedback.comment}
+                {!feedback.correct && (
+                  <div style={{ marginTop: 10, borderTop: '1.5px dashed var(--ink)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {answer.trim() && (
+                      <div>
+                        <div className="eyebrow">You wrote</div>
+                        <div style={{ fontStyle: 'italic' }}>{answer}{feedback.userAnswerMeaning ? ` — “${feedback.userAnswerMeaning}”` : ''}</div>
+                      </div>
+                    )}
+                    <div>
+                      <div className="eyebrow">Answer</div>
+                      <div style={{ fontWeight: 700 }}>{feedback.corrected}</div>
+                    </div>
                   </div>
                 )}
               </div>
 
-              {short && (short.note || short.use) && (
+              {/* Per-item note + an example using the exact phrase being quizzed. */}
+              {(item.note || item.example) && (
                 <div style={{ marginTop: 12, padding: 12, border: '2px dashed var(--ink)', borderRadius: 10, fontSize: 13, lineHeight: 1.5 }}>
-                  {short.note && <div>💡 {short.note}</div>}
-                  {short.use && (
-                    <div style={{ marginTop: short.note ? 6 : 0 }}>
-                      <span style={{ fontWeight: 600 }}>{short.use.sv}</span>
-                      <span className="muted"> — {short.use.en}</span>
+                  {item.note && <div>💡 {item.note}</div>}
+                  {item.example && (
+                    <div style={{ marginTop: item.note ? 6 : 0 }}>
+                      <span style={{ fontWeight: 600 }}>{item.example.sv}</span>
+                      <span className="muted"> — {item.example.en}</span>
                     </div>
                   )}
                 </div>
@@ -283,25 +292,34 @@ export default function VocabPage() {
     <div className="wrap">
       <div className="card" style={{ textAlign: 'center' }}>
         <span className="tag">done</span>
-        <h2 style={{ marginTop: 10 }}>Snyggt! Vocabulary done.</h2>
+        <h2 style={{ marginTop: 10 }}>{reviewOnly ? 'Nice review. 💪' : 'Snyggt! Vocabulary done.'}</h2>
         {quizTotal > 0 && <p className="muted">You got {score} of {quizTotal} right.</p>}
         {streak !== null && <p className="muted">🔥 {streak} day{streak === 1 ? '' : 's'} running.</p>}
 
-        <div style={{
-          marginTop: 16, padding: 16, border: '3px solid var(--ink)', borderRadius: 12,
-          background: meta.dailyTargetMet ? 'var(--mustard)' : 'var(--green)',
-          boxShadow: '4px 4px 0 var(--ink)',
-        }}>
-          <p style={{ margin: 0, fontWeight: 700, color: meta.dailyTargetMet ? 'var(--ink)' : '#FAF3E7' }}>
-            {meta.dailyTargetMet
-              ? "That's your 10 new words for today — nicely done."
-              : meta.introducedNow > 0
-                ? `Learned ${meta.introducedNow} new ${meta.introducedNow === 1 ? 'word' : 'words'}.`
-                : 'No new words left right now — good review session.'}
-          </p>
-        </div>
+        {!reviewOnly && (
+          <div style={{
+            marginTop: 16, padding: 16, border: '3px solid var(--ink)', borderRadius: 12,
+            background: meta.dailyTargetMet ? 'var(--mustard)' : 'var(--green)',
+            boxShadow: '4px 4px 0 var(--ink)',
+          }}>
+            <p style={{ margin: 0, fontWeight: 700, color: meta.dailyTargetMet ? 'var(--ink)' : '#FAF3E7' }}>
+              {meta.dailyTargetMet
+                ? "That's your 10 new words for today — nicely done."
+                : meta.introducedNow > 0
+                  ? `Learned ${meta.introducedNow} new ${meta.introducedNow === 1 ? 'item' : 'items'}.`
+                  : 'No new items left right now — good review session.'}
+            </p>
+          </div>
+        )}
 
-        <a href="/vocab"><button className="btn btn-secondary" style={{ marginTop: 12 }}>Do more words →</button></a>
+        {reviewOnly ? (
+          <a href="/vocab?mode=review"><button className="btn btn-secondary" style={{ marginTop: 12 }}>Practice more →</button></a>
+        ) : (
+          <>
+            <a href="/vocab"><button className="btn btn-secondary" style={{ marginTop: 12 }}>Do more words →</button></a>
+            <a href="/vocab?mode=review"><button className="btn btn-primary" style={{ marginTop: 10 }}>Practice without new words →</button></a>
+          </>
+        )}
         <a href="/"><button className="btn btn-plain" style={{ marginTop: 10 }}>Back to dashboard</button></a>
       </div>
     </div>

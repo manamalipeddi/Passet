@@ -55,12 +55,17 @@ Always include one "lemma" item: prompt = the English meaning "${translation}", 
 Also add 2-3 SHORT, useful phrases/chunks that use this word — sentence parts, NOT full sentences (e.g. "thinking about" -> "tänka på", "previous year" -> "förra året").
 Use natural English for prompts, including irregular forms ("went", "gone", "bigger"). For grammatical forms the Swedish answer MUST be built from the forms above. Omit any form that doesn't apply.
 
+For EACH item also give:
+- "alt_sv": other genuinely acceptable Swedish answers for that prompt (word-order variants, with/without subject pronoun, common synonyms). Empty array if none.
+- "note": one short sentence explaining THIS specific form/phrase and what it means in English (about the item itself, not the base word).
+- "example": one short, natural example sentence USING this exact form/phrase, with its English translation.
+
 Return ONLY a JSON array, no markdown:
-[{"kind":"lemma|verb_tense|noun_form|adj_form|phrase","label":"short label e.g. 'past tense' or the phrase","prompt_en":"English shown","answer_sv":"Swedish answer","alt_sv":["optional alternates"]}]`;
+[{"kind":"lemma|verb_tense|noun_form|adj_form|phrase","label":"short label e.g. 'past tense' or the phrase","prompt_en":"English shown","answer_sv":"Swedish answer","alt_sv":["optional alternates"],"note":"short explanation of this item","example":{"sv":"...","en":"..."}}]`;
 
   let raw: any[];
   try {
-    raw = parseArray(await callClaude(prompt, 900, 'claude-haiku-4-5-20251001'));
+    raw = parseArray(await callClaude(prompt, 1600, 'claude-haiku-4-5-20251001'));
   } catch (err) {
     console.error('[vocabItems] generation failed for', word.lemma, err);
     return 0;
@@ -80,6 +85,9 @@ Return ONLY a JSON array, no markdown:
     const alt_sv = Array.isArray(it?.alt_sv)
       ? it.alt_sv.map((a: any) => String(a).trim()).filter(Boolean).slice(0, 4)
       : [];
+    const ex = it?.example && it.example.sv && it.example.en
+      ? { sv: String(it.example.sv), en: String(it.example.en) }
+      : null;
     rows.push({
       word_id: word.id,
       kind,
@@ -87,6 +95,8 @@ Return ONLY a JSON array, no markdown:
       prompt_en,
       answer_sv,
       alt_sv,
+      note: String(it?.note ?? '').trim() || null,
+      example: ex,
       introduced: false,
     });
     if (rows.length >= 14) break;
@@ -109,6 +119,62 @@ Return ONLY a JSON array, no markdown:
     .select('id');
   if (error) { console.error('[vocabItems] insert failed for', word.lemma, error.message); return 0; }
   return data?.length ?? 0;
+}
+
+// Backfill per-item note + example for items generated before those columns
+// existed. One Haiku call per word covers all of that word's noteless items;
+// SRS/progress is never touched. Returns items updated.
+export async function fillNotesForWord(supabase: any, word: any, items: any[]): Promise<number> {
+  const need = (items ?? []).filter((i) => !i.note);
+  if (!need.length) return 0;
+  const list = need.map((i, n) => `${n + 1}. prompt:"${i.prompt_en}" answer:"${i.answer_sv}"`).join('\n');
+  const prompt = `You are annotating Swedish vocabulary flashcards for the word "${word.lemma}" (means "${word.translation ?? ''}").
+For each item below write:
+- "note": one short sentence explaining THAT specific Swedish form/phrase and its English meaning (about the item, not the base word).
+- "example": one short, natural example sentence USING that exact form/phrase, with its English translation.
+
+Items:
+${list}
+
+Return ONLY a JSON array in the same order, no markdown:
+[{"prompt_en":"...","note":"...","example":{"sv":"...","en":"..."}}]`;
+
+  let arr: any[];
+  try {
+    arr = parseArray(await callClaude(prompt, 1600, 'claude-haiku-4-5-20251001'));
+  } catch (err) {
+    console.error('[vocabItems] note backfill failed for', word.lemma, err);
+    return 0;
+  }
+
+  let done = 0;
+  for (let idx = 0; idx < need.length; idx++) {
+    const i = need[idx];
+    const e = arr.find((a) => String(a?.prompt_en ?? '').toLowerCase() === i.prompt_en.toLowerCase()) ?? arr[idx];
+    const note = String(e?.note ?? '').trim();
+    const ex = e?.example && e.example.sv && e.example.en
+      ? { sv: String(e.example.sv), en: String(e.example.en) } : null;
+    if (!note && !ex) continue;
+    await supabase.from('vocab_items').update({ note: note || null, example: ex }).eq('id', i.id);
+    done++;
+  }
+  return done;
+}
+
+// Fill notes for up to `limit` words that still have noteless items. Returns
+// words processed. Loop it to backfill the whole existing set.
+export async function backfillItemNotes(supabase: any, limit = 4): Promise<number> {
+  const { data: missing } = await supabase.from('vocab_items').select('word_id').is('note', null).limit(500);
+  const wordIds = [...new Set((missing ?? []).map((r: any) => r.word_id))].slice(0, limit);
+  if (!wordIds.length) return 0;
+  const { data: words } = await supabase.from('words').select('id, lemma, translation').in('id', wordIds);
+  let done = 0;
+  for (const w of (words ?? [])) {
+    const { data: items } = await supabase
+      .from('vocab_items').select('id, prompt_en, answer_sv, note').eq('word_id', w.id).is('note', null);
+    if (await fillNotesForWord(supabase, w, items ?? [])) done++;
+  }
+  return done;
 }
 
 // Find the next words that have no items yet (user-added "heard" words first,

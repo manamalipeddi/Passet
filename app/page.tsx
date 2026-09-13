@@ -160,6 +160,11 @@ export default async function Home() {
             Practice vocabulary →
           </button>
         </a>
+        <a href="/vocab?mode=review">
+          <p style={{ margin: '8px 2px 0', fontSize: 12, fontWeight: 700, color: 'rgba(250,243,231,0.75)', textAlign: 'center' }}>
+            or practice without new words →
+          </p>
+        </a>
 
         <div style={{ height: 16 }} />
 

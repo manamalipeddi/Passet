@@ -66,6 +66,7 @@ export async function POST(req: Request) {
   const accepted = [item.answer_sv, ...(item.alt_sv ?? [])].filter(Boolean);
   let correct = deterministicMatch(userAnswer ?? '', accepted);
   let comment = '';
+  let userAnswerMeaning: string | null = null;
 
   if (correct) {
     comment = 'Rätt! 🎉';
@@ -75,27 +76,54 @@ The learner was shown the English prompt: "${item.prompt_en}"${item.label ? ` ($
 The expected Swedish answer is: "${item.answer_sv}"${item.alt_sv?.length ? ` (also acceptable: ${item.alt_sv.join(', ')})` : ''}.
 The learner typed: "${userAnswer ?? ''}".
 
-Judge whether the learner's Swedish is an acceptable answer for that prompt (accept genuinely correct alternatives, not just the expected one). If it's wrong but close (a typo, wrong form, or near-miss), say so; if they used a real word meaning something else or a worse-fitting one, mention the better word briefly. Return ONLY valid JSON, no markdown:
-{"correct": true or false, "comment": "one short, encouraging sentence (max ~20 words)"}`;
+Grade fairly. Swedish has flexibility — accept ANY genuinely correct translation, not only the expected one: alternative word order, presence or absence of a subject pronoun, valid synonyms, and equivalent forms are all correct. Do NOT mark a correct answer wrong; when in doubt, lean towards correct.
+
+If (and only if) it is genuinely wrong, you MUST explain SPECIFICALLY what is wrong — the exact issue (wrong word choice, wrong tense/form, spelling, missing/extra word, word order) — never a vague comment. Return ONLY valid JSON, no markdown:
+{"correct": true or false, "comment": "one short sentence: praise if correct, otherwise the specific reason it's wrong", "your_answer_meaning": "if wrong AND the learner wrote real Swedish, a literal English gloss of what THEY actually wrote (so they see their words vs. the intended meaning); otherwise null"}`;
     try {
       const result = JSON.parse(await callClaude(prompt, 300));
       correct = !!result.correct;
-      comment = typeof result.comment === 'string' ? result.comment : '';
+      comment = typeof result.comment === 'string' ? result.comment.trim() : '';
+      userAnswerMeaning = typeof result.your_answer_meaning === 'string' && result.your_answer_meaning.trim()
+        ? result.your_answer_meaning.trim() : null;
     } catch (err) {
       console.error('[vocab/grade] AI grading failed:', err);
-      comment = `The answer is "${item.answer_sv}".`;
+    }
+    if (correct) {
+      comment = comment || 'Rätt! 🎉';
+    } else if (!comment) {
+      // Never leave the learner without an explanation.
+      comment = `Not quite — the expected answer is "${item.answer_sv}".`;
     }
   }
 
-  // Update this item's SRS + tallies.
-  const updated = updateSrs(item, correct);
+  // Mastery is count-based: a single-word answer is mastered after MASTER_SINGLE
+  // correct, a multi-word answer (phrase or form like "har bott") after
+  // MASTER_PHRASE. Mastered items are NOT retired — they stay in spaced
+  // repetition but, once mastered and answered correctly, graduate to at least a
+  // "mature" interval (21 days, the Anki convention) so they sit further out
+  // than learning items. A wrong answer still resets them via normal SM-2, so a
+  // slip brings the item back soon regardless of the mastered label.
+  const MASTER_SINGLE = 2;
+  const MASTER_PHRASE = 5;
+  const MATURE_DAYS   = 21;
+  const isPhrase = (item.answer_sv ?? '').trim().split(/\s+/).filter(Boolean).length >= 2;
+  const newTimesCorrect = (item.times_correct ?? 0) + (correct ? 1 : 0);
+  const itemMastered = newTimesCorrect >= (isPhrase ? MASTER_PHRASE : MASTER_SINGLE);
+
+  let sched = updateSrs(item, correct);
+  if (correct && itemMastered && sched.interval_days < MATURE_DAYS) {
+    const next = new Date();
+    next.setDate(next.getDate() + MATURE_DAYS);
+    sched = { ...sched, interval_days: MATURE_DAYS, next_review_date: next.toISOString().slice(0, 10) };
+  }
   await supabase
     .from('vocab_items')
     .update({
-      ...updated,
-      status: updated.interval_days > 10 ? 'known' : 'learning',
+      ...sched,
+      status: itemMastered ? 'known' : 'learning',
       last_reviewed_at: new Date().toISOString(),
-      times_correct: (item.times_correct ?? 0) + (correct ? 1 : 0),
+      times_correct: newTimesCorrect,
       times_wrong: (item.times_wrong ?? 0) + (correct ? 0 : 1),
     })
     .eq('id', itemId);
@@ -105,11 +133,10 @@ Judge whether the learner's Swedish is an acceptable answer for that prompt (acc
   const { data: prog } = await supabase
     .from('user_progress').select('*').eq('word_id', item.word_id).single();
   if (prog) {
-    const thisNowKnown = updated.interval_days > 10;
     const { data: siblings } = await supabase
       .from('vocab_items').select('id, status').eq('word_id', item.word_id);
     const allKnown = (siblings ?? []).every((s: any) =>
-      s.id === itemId ? thisNowKnown : s.status === 'known');
+      s.id === itemId ? itemMastered : s.status === 'known');
     await supabase
       .from('user_progress')
       .update({
@@ -132,5 +159,11 @@ Judge whether the learner's Swedish is an acceptable answer for that prompt (acc
     grammar_point_ids: [],
   });
 
-  return NextResponse.json({ correct, comment, corrected: item.answer_sv });
+  return NextResponse.json({
+    correct,
+    comment,
+    corrected: item.answer_sv,
+    userAnswerMeaning,
+    mastered: itemMastered,
+  });
 }

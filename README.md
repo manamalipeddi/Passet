@@ -9,13 +9,21 @@ A personal daily Swedish practice app with two separate tracks:
   drilling "bodde". The Swedish forms come straight from `words.forms`; only the English
   prompts and phrases are generated (Haiku, cached) — see `lib/vocabItems.ts`. Items are
   pre-generated into a buffer (`introduced=false`) and topped up in the background
-  (`/api/vocab/topup`), so `/api/vocab/session` stays DB-only and fast. A session promotes
-  up to 10 new items/day (user-added "heard" words first, then curriculum by rank) plus 10
-  spaced-repetition review items. Base words met for the first time get a see-Swedish /
-  pick-English multiple choice with cached enrichment (example uses + a memorable note);
-  everything is quizzed by typing the Swedish. Typed answers are checked deterministically
-  (typo/diacritic tolerant) and only fall back to Claude for nuance. A word counts as
-  "mastered" once all of its items are. A soft cap nudges you at 10 new items/day.
+  (`/api/vocab/topup`), so `/api/vocab/session` stays DB-only and fast. A normal session
+  promotes up to 10 new items/day (user-added "heard" words first, then curriculum by rank)
+  plus 10 spaced-repetition review items; `POST /api/vocab/session {mode:"review"}` practises
+  what you already know without introducing anything new (`/vocab?mode=review`). Base words
+  met for the first time get a see-Swedish / pick-English multiple choice with cached
+  enrichment; everything is quizzed by typing the Swedish. After each answer, the feedback
+  is about the exact item quizzed — a per-item note + example sentence using that form/phrase
+  (`vocab_items.note` / `.example`, generated with the item, backfilled via
+  `/api/vocab/fill-notes`). Typed answers are checked deterministically (typo/diacritic
+  tolerant), falling back to Claude for nuance — which must always explain a wrong answer and
+  glosses what you actually wrote. **Mastery is count-based:** a single-word answer is
+  mastered after 2 correct, a multi-word answer (phrase or form like "har bott") after 5;
+  mastered items are not retired but graduate to a 21-day ("mature") interval and keep
+  cycling through spaced repetition. A word is "mastered" once all its items are. A soft cap
+  nudges you at 10 new items/day.
 - **Grammar** (`/lesson?mode=learn` to unlock the next point, `?mode=grammar` to drill) —
   grammar-focused translation exercises with generated sentences, graded with explanations.
 
