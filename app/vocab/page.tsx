@@ -293,7 +293,7 @@ function VocabInner() {
       <div className="card" style={{ textAlign: 'center' }}>
         <span className="tag">done</span>
         <h2 style={{ marginTop: 10 }}>{reviewOnly ? 'Nice review. 💪' : 'Snyggt! Vocabulary done.'}</h2>
-        {quizTotal > 0 && <p className="muted">You got {score} of {quizTotal} right.</p>}
+        {quizTotal > 0 && <p className="muted">You got {score} of {quizTotal} right ({Math.round((score / quizTotal) * 100)}%).</p>}
         {streak !== null && <p className="muted">🔥 {streak} day{streak === 1 ? '' : 's'} running.</p>}
 
         {!reviewOnly && (
