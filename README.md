@@ -42,6 +42,9 @@ this repo is just the application code. Schema changes live as timestamped SQL f
 `migrations/` — apply new ones to the Supabase project (e.g. via the SQL editor) before
 running the app. `20260910_vocab_redesign.sql` adds `words.enrichment` and the
 `streak_state.vocab_new_date` / `vocab_new_today` daily counters; `20260911_vocab_items.sql`
-adds the `vocab_items` table (per-form quiz items with their own spaced repetition). After
-deploying, seed the item buffer by calling `POST /api/vocab/topup` a few times (it generates
-items for the next few words per call); the app also tops it up in the background as you use it.
+adds the `vocab_items` table (per-form quiz items with their own spaced repetition);
+`20260913_vocab_item_notes.sql` adds per-item `note`/`example`; `20260915_per_track_last_session.sql`
+adds `streak_state.last_vocab_at` / `last_grammar_at` so the dashboard shows each track's last
+session separately. After deploying, seed the item buffer by calling `POST /api/vocab/topup` a
+few times (it generates items for the next few words per call); the app also tops it up in the
+background as you use it.

@@ -23,6 +23,8 @@ export default async function Home() {
     { count: learning },
     { count: known },
     { count: totalWords },
+    { count: grammarTotal },
+    { count: grammarKnown },
     { data: recent },
     { data: startedGpRows },
     { data: wordProgRows },
@@ -32,6 +34,8 @@ export default async function Home() {
     supabase.from('user_progress').select('*', { count: 'exact', head: true }).eq('status', 'learning'),
     supabase.from('user_progress').select('*', { count: 'exact', head: true }).eq('status', 'known'),
     supabase.from('words').select('*', { count: 'exact', head: true }),
+    supabase.from('grammar_points').select('*', { count: 'exact', head: true }),
+    supabase.from('user_grammar_progress').select('*', { count: 'exact', head: true }).eq('status', 'known'),
     supabase.from('attempts').select('*').order('created_at', { ascending: false }).limit(60),
     supabase.from('user_grammar_progress').select('grammar_point_id'),
     supabase.from('user_progress').select('word_id, times_correct, times_wrong, words(id, lemma, translation, pos)'),
@@ -48,8 +52,15 @@ export default async function Home() {
   const touched    = (learning ?? 0) + (known ?? 0);
   const startedPct  = totalWords ? Math.round((touched / totalWords) * 100) : null;
   const masteredPct = touched ? Math.round(((known ?? 0) / touched) * 100) : null;
+
+  // Grammar progress — mirrors the words stat (started over total, mastered over started).
+  const grammarStartedCount = (startedGpRows ?? []).length;
+  const grammarStartedPct   = grammarTotal ? Math.round((grammarStartedCount / grammarTotal) * 100) : null;
+  const grammarMasteredPct  = grammarStartedCount ? Math.round(((grammarKnown ?? 0) / grammarStartedCount) * 100) : null;
+
   const streak     = state?.current_streak ?? 0;
-  const lastSession = formatLastSession(state?.last_session_at);
+  const lastVocab   = formatLastSession(state?.last_vocab_at);
+  const lastGrammar = formatLastSession(state?.last_grammar_at);
   const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
 
   // Worth a second look — wrong answers from the last 3 practice sessions,
@@ -124,7 +135,9 @@ export default async function Home() {
     <div className="wrap">
       <RefreshOnRestore />
       <h1 style={{ fontSize: 26, lineHeight: 1.3, margin: 0 }}>{greeting}</h1>
-      <p className="muted" style={{ margin: '6px 0 0', fontSize: 13 }}>Last session: {lastSession}</p>
+      <p className="muted" style={{ margin: '6px 0 0', fontSize: 13 }}>
+        Last vocab: {lastVocab}<br />Last grammar: {lastGrammar}
+      </p>
 
       <div className="row2" style={{ marginTop: 18 }}>
         <div className="stat">
@@ -134,6 +147,17 @@ export default async function Home() {
         <div className="stat">
           <div className="num">{touched}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {totalWords ?? 0}{startedPct !== null ? ` (${startedPct}%)` : ''}</span></div>
           <div className="lbl">words started<br />{known ?? 0}{masteredPct !== null ? ` (${masteredPct}%)` : ''} mastered</div>
+        </div>
+      </div>
+
+      <div className="row2" style={{ marginTop: 14 }}>
+        <div className="stat">
+          <div className="num">{grammarStartedCount}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {grammarTotal ?? 0}{grammarStartedPct !== null ? ` (${grammarStartedPct}%)` : ''}</span></div>
+          <div className="lbl">grammar started<br />{grammarKnown ?? 0}{grammarMasteredPct !== null ? ` (${grammarMasteredPct}%)` : ''} mastered</div>
+        </div>
+        <div className="stat">
+          <div className="num">{known ?? 0}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> + {grammarKnown ?? 0}</span></div>
+          <div className="lbl">mastered so far<br />words + grammar</div>
         </div>
       </div>
 
@@ -166,31 +190,39 @@ export default async function Home() {
           </p>
         </a>
 
-        <div style={{ height: 16 }} />
+        <div style={{ height: 22, borderTop: '1.5px dashed rgba(250,243,231,0.25)', marginTop: 22 }} />
 
-        {/* Grammar — learn the next point, or drill ones already met */}
-        <div className="row2">
-          {nextGrammar ? (
-            <a href="/lesson?mode=learn" style={{ display: 'block' }}>
-              <button className="btn btn-primary">Learn new grammar</button>
-              <p style={{ margin: '6px 2px 0', fontSize: 11, lineHeight: 1.35, color: 'rgba(250,243,231,0.6)' }}>
-                Next: {nextGrammar.title}
-                {nextGrammar.cefr_level ? ` · ${nextGrammar.cefr_level}` : ''}
-              </p>
+        {/* Grammar — same treatment as vocab: practice what you know, or learn new */}
+        <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
+          Build your grammar
+        </p>
+        <p style={{ margin: '0 0 14px', fontSize: 12, color: 'rgba(250,243,231,0.5)' }}>
+          {grammarPreviewTitle ? grammarNote : 'One new structure at a time, then practice it'}
+        </p>
+        {grammarPreviewTitle ? (
+          <>
+            <a href="/lesson?mode=grammar">
+              <button className="btn btn-secondary" style={{ boxShadow: '4px 4px 0 rgba(250,243,231,0.15)' }}>
+                Practice grammar →
+              </button>
             </a>
-          ) : (
-            <div>
-              <button className="btn btn-primary" disabled style={{ opacity: 0.6 }}>Learn new grammar</button>
-              <p style={{ margin: '6px 2px 0', fontSize: 11, lineHeight: 1.35, color: 'rgba(250,243,231,0.6)' }}>
-                All grammar introduced
-              </p>
-            </div>
-          )}
-          <a href="/lesson?mode=grammar" style={{ display: 'block' }}>
-            <button className="btn btn-primary">Practice grammar</button>
-            <p style={{ margin: '6px 2px 0', fontSize: 11, lineHeight: 1.35, color: 'rgba(250,243,231,0.6)' }}>{grammarNote}</p>
+            {nextGrammar && (
+              <a href="/lesson?mode=learn">
+                <p style={{ margin: '8px 2px 0', fontSize: 12, fontWeight: 700, color: 'rgba(250,243,231,0.75)', textAlign: 'center' }}>
+                  or learn a new concept → · {nextGrammar.title}
+                </p>
+              </a>
+            )}
+          </>
+        ) : nextGrammar ? (
+          <a href="/lesson?mode=learn">
+            <button className="btn btn-secondary" style={{ boxShadow: '4px 4px 0 rgba(250,243,231,0.15)' }}>
+              Learn your first grammar point →
+            </button>
           </a>
-        </div>
+        ) : (
+          <p style={{ margin: 0, fontSize: 13, color: 'rgba(250,243,231,0.6)' }}>All grammar introduced.</p>
+        )}
       </details>
 
       <details className="card sec" style={{ marginTop: 18 }} open>

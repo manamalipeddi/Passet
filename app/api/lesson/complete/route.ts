@@ -12,8 +12,14 @@ export async function POST(req: Request) {
 
   // Stamp the exact moment of this session on every completion (even a repeat
   // session on a day already counted). last_practiced_date drives the streak;
-  // last_session_at is the precise "when did I last practice" other views/agents read.
-  await supabase.from('streak_state').update({ last_session_at: new Date().toISOString() }).eq('id', 1);
+  // last_session_at is the precise "when did I last practice" other views/agents
+  // read; last_vocab_at / last_grammar_at track each side separately (the vocab
+  // flow completes with mode='words', everything else is grammar practice).
+  const nowIso = new Date().toISOString();
+  const trackField = mode === 'words' ? 'last_vocab_at' : 'last_grammar_at';
+  await supabase.from('streak_state')
+    .update({ last_session_at: nowIso, [trackField]: nowIso })
+    .eq('id', 1);
 
   // After a strong run of practice, nudge toward new material.
   let ready_for_new = false;
