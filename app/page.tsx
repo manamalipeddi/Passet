@@ -104,32 +104,8 @@ export default async function Home() {
     .sort((a, b) => a.accuracy - b.accuracy || b.attempts - a.attempts)
     .slice(0, 10);
 
-  const today = new Date().toISOString().slice(0, 10);
-
-  // Grammar preview: due point first, else the introduced point touched least recently.
-  // Mirrors mode='grammar' (never introduces new points).
-  const { data: dueGp } = await supabase
-    .from('user_grammar_progress')
-    .select('grammar_point_id, grammar_points(title)')
-    .lte('next_review_date', today)
-    .order('next_review_date')
-    .limit(1);
-  let grammarPick: any = dueGp?.[0] ?? null;
-  const grammarDue = !!grammarPick;
-  if (!grammarPick) {
-    const { data: anyGp } = await supabase
-      .from('user_grammar_progress')
-      .select('grammar_point_id, grammar_points(title)')
-      .order('last_reviewed_at', { ascending: true, nullsFirst: true })
-      .limit(1);
-    grammarPick = anyGp?.[0] ?? null;
-  }
-  const grammarPreviewTitle = grammarPick?.grammar_points?.title ?? null;
-  const grammarNote = grammarPreviewTitle
-    ? grammarDue
-      ? `Due for review · ${grammarPreviewTitle}`
-      : `Revisiting · ${grammarPreviewTitle}`
-    : 'No grammar started yet — learn one first';
+  // Grammar practice only unlocks once at least one point has been introduced.
+  const hasGrammar = grammarStartedCount > 0;
 
   return (
     <div className="wrap">
@@ -161,7 +137,7 @@ export default async function Home() {
         </div>
       </div>
 
-      {/* Hero — learn section (collapsible) */}
+      {/* Hero — LEARN: introduce new concepts (with a little built-in review) */}
       <details className="sec hero-green" style={{
         background: 'var(--green)',
         border: '3px solid var(--green)',
@@ -172,56 +148,73 @@ export default async function Home() {
       }} open>
         <summary><span className="tag" style={{ background: 'var(--mustard)', color: 'var(--ink)' }}>learn</span></summary>
 
-        {/* Vocabulary — the fast word-building flow: 10 new words + a review quiz */}
+        {/* Vocabulary — 10 new words: meet them, drill them, then review old ones */}
         <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
           Build your vocabulary
         </p>
         <p style={{ margin: '0 0 14px', fontSize: 12, color: 'rgba(250,243,231,0.5)' }}>
-          10 new words a day, then a spaced-repetition quiz
+          10 new words — meet them, drill them, then review words that are due
         </p>
         <a href="/vocab">
           <button className="btn btn-secondary" style={{ boxShadow: '4px 4px 0 rgba(250,243,231,0.15)' }}>
-            Practice vocabulary →
+            Learn today&rsquo;s words →
           </button>
-        </a>
-        <a href="/vocab?mode=review">
-          <p style={{ margin: '8px 2px 0', fontSize: 12, fontWeight: 700, color: 'rgba(250,243,231,0.75)', textAlign: 'center' }}>
-            or practice without new words →
-          </p>
         </a>
 
         <div style={{ height: 22, borderTop: '1.5px dashed rgba(250,243,231,0.25)', marginTop: 22 }} />
 
-        {/* Grammar — same treatment as vocab: practice what you know, or learn new */}
+        {/* Grammar — unlock the next structure, drilled with a little old review */}
         <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
           Build your grammar
         </p>
         <p style={{ margin: '0 0 14px', fontSize: 12, color: 'rgba(250,243,231,0.5)' }}>
-          {grammarPreviewTitle ? grammarNote : 'One new structure at a time, then practice it'}
+          {nextGrammar ? `Next up · ${nextGrammar.title}` : 'One new structure at a time, then practice it'}
         </p>
-        {grammarPreviewTitle ? (
-          <>
-            <a href="/lesson?mode=grammar">
-              <button className="btn btn-secondary" style={{ boxShadow: '4px 4px 0 rgba(250,243,231,0.15)' }}>
-                Practice grammar →
-              </button>
-            </a>
-            {nextGrammar && (
-              <a href="/lesson?mode=learn">
-                <p style={{ margin: '8px 2px 0', fontSize: 12, fontWeight: 700, color: 'rgba(250,243,231,0.75)', textAlign: 'center' }}>
-                  or learn a new concept → · {nextGrammar.title}
-                </p>
-              </a>
-            )}
-          </>
-        ) : nextGrammar ? (
+        {nextGrammar ? (
           <a href="/lesson?mode=learn">
             <button className="btn btn-secondary" style={{ boxShadow: '4px 4px 0 rgba(250,243,231,0.15)' }}>
-              Learn your first grammar point →
+              {hasGrammar ? 'Learn a new grammar point →' : 'Learn your first grammar point →'}
             </button>
           </a>
         ) : (
           <p style={{ margin: 0, fontSize: 13, color: 'rgba(250,243,231,0.6)' }}>All grammar introduced.</p>
+        )}
+      </details>
+
+      {/* PRACTICE: no new concepts — reinforce what's already been learned */}
+      <details className="card sec" style={{ marginTop: 18 }} open>
+        <summary><span className="tag" style={{ background: 'var(--mustard)', color: 'var(--ink)' }}>practice</span></summary>
+
+        {/* Vocabulary practice — up to 50 due/weak words, stoppable at 25 */}
+        <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, lineHeight: 1.3 }}>
+          Practice vocabulary
+        </p>
+        <p className="muted" style={{ margin: '0 0 12px', fontSize: 12 }}>
+          Up to 50 words you already know, hardest first · stop at 25 anytime
+        </p>
+        <a href="/vocab?mode=practice">
+          <button className="btn btn-secondary">Practice vocabulary →</button>
+        </a>
+
+        <div style={{ height: 20, borderTop: '1.5px dashed var(--ink)', marginTop: 20, opacity: 0.25 }} />
+
+        {/* Grammar practice — 10 sentence constructions from learned material, stop at 6 */}
+        <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: 18, lineHeight: 1.3 }}>
+          Practice grammar
+        </p>
+        <p className="muted" style={{ margin: '0 0 12px', fontSize: 12 }}>
+          {hasGrammar
+            ? '10 sentence constructions from what you’ve learned · stop after 6'
+            : 'Learn a grammar point first to unlock practice'}
+        </p>
+        {hasGrammar ? (
+          <a href="/lesson?mode=practice">
+            <button className="btn btn-secondary">Practice grammar →</button>
+          </a>
+        ) : (
+          <a href="/lesson?mode=learn">
+            <button className="btn btn-plain" style={{ boxShadow: '2px 2px 0 var(--ink)' }}>Learn your first grammar point →</button>
+          </a>
         )}
       </details>
 

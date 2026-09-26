@@ -4,7 +4,7 @@ import { callClaude } from '@/lib/anthropic';
 
 const NEEDED = 3;
 
-type Mode = 'daily' | 'extra' | 'learn' | 'targeted' | 'words' | 'grammar';
+type Mode = 'daily' | 'extra' | 'learn' | 'targeted' | 'words' | 'grammar' | 'practice';
 
 // Surface forms of a word (lemma + single-token inflections), lowercased.
 // Used to require/verify the focus word in targeted-word practice sentences.
@@ -57,9 +57,96 @@ async function fetchCached(
   return rows.slice(0, NEEDED);
 }
 
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// Sort learned grammar points hardest/most-due first: due points first (by due
+// date), then introduced-but-not-due points least-recently-touched first.
+function byDueThenLeastRecent(today: string) {
+  return (a: any, b: any) => {
+    const aDue = (a.next_review_date ?? '9999') <= today ? 0 : 1;
+    const bDue = (b.next_review_date ?? '9999') <= today ? 0 : 1;
+    if (aDue !== bDue) return aDue - bDue;
+    if (aDue === 0) return (a.next_review_date ?? '') < (b.next_review_date ?? '') ? -1 : 1;
+    return (a.last_reviewed_at ?? '') < (b.last_reviewed_at ?? '') ? -1 : 1;
+  };
+}
+
+// Generate + cache k En->Sv construction sentences for one grammar point,
+// constrained to already-learned vocabulary. Returns the inserted rows (or []).
+async function generateEnToSvSentences(
+  supabase: ReturnType<typeof getServiceClient>,
+  point: any, vocab: any[], k: number, primaryWordId: string | null,
+): Promise<any[]> {
+  if (k <= 0) return [];
+  const vocabList = vocab.map((w: any) => `${w.lemma} (${w.pos})`).join('; ');
+  const prompt = `You are a Swedish tutor generating practice exercises.
+Learner vocabulary: ${vocabList}
+Grammar focus: "${point.title}" — ${point.description}
+Generate exactly ${k} English→Swedish sentence(s) that naturally exercise the grammar focus. Use ONLY the listed vocabulary plus basic function words, keep them simple A1/A2, and make them ORIGINAL (never copy any real text).
+Return ONLY valid JSON, no markdown: { "en_to_sv": [{"sentence_en": "English prompt", "sentence_sv": "correct Swedish"}] }`;
+  let gen: any = {};
+  try { gen = JSON.parse(await callClaude(prompt)); } catch { return []; }
+  const rows = (gen.en_to_sv ?? []).slice(0, k).map((s: any) => ({
+    grammar_point_id: point.id, primary_word_id: primaryWordId,
+    direction: 'en_to_sv', sentence_en: s.sentence_en, sentence_sv: s.sentence_sv,
+  })).filter((r: any) => r.sentence_en && r.sentence_sv);
+  if (!rows.length) return [];
+  const { data } = await supabase.from('generated_sentences').insert(rows).select();
+  return data ?? [];
+}
+
+function normSv(s: string): string {
+  return (s ?? '').toLowerCase().replace(/[^a-zåäöéü\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+type Concepts = { grammar: string[]; words: string[]; phrases: string[] };
+
+// Build a deterministic matcher that, given a Swedish sentence, reports which
+// already-learned grammar concept / words / phrases it uses. Purely mechanical
+// (token + substring matching against learned vocab) — no LLM guessing.
+async function buildConceptMatcher(
+  supabase: ReturnType<typeof getServiceClient>,
+): Promise<(referenceSv: string, grammarTitle: string | null) => Concepts> {
+  const [{ data: wp }, { data: ph }] = await Promise.all([
+    supabase.from('user_progress').select('words(lemma, forms)').limit(2000),
+    supabase.from('vocab_items').select('answer_sv').eq('introduced', true).eq('kind', 'phrase').limit(2000),
+  ]);
+
+  const formIndex = new Map<string, string>();   // single-token surface form → lemma
+  for (const row of wp ?? []) {
+    const w = (row as any).words;
+    if (!w?.lemma) continue;
+    for (const f of wordForms(w)) if (!formIndex.has(f)) formIndex.set(f, w.lemma);
+  }
+
+  const phrases = [...new Set((ph ?? []).map((r: any) => String(r.answer_sv ?? '').trim()).filter(Boolean))]
+    .map((text) => ({ text, norm: normSv(text) }))
+    .filter((p) => p.norm.includes(' '));         // multi-word phrases only
+
+  return (referenceSv, grammarTitle) => {
+    const norm = normSv(referenceSv);
+    const tokens = new Set(norm.split(' ').filter(Boolean));
+    const words: string[] = [];
+    const seen = new Set<string>();
+    for (const t of tokens) {
+      const lemma = formIndex.get(t);
+      if (lemma && !seen.has(lemma)) { seen.add(lemma); words.push(lemma); }
+    }
+    const matchedPhrases = phrases.filter((p) => norm.includes(p.norm)).map((p) => p.text);
+    return { grammar: grammarTitle ? [grammarTitle] : [], words, phrases: matchedPhrases };
+  };
+}
+
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  const mode: Mode = (['daily', 'extra', 'learn', 'targeted', 'words', 'grammar'] as const).includes(body.mode)
+  const mode: Mode = (['daily', 'extra', 'learn', 'targeted', 'words', 'grammar', 'practice'] as const).includes(body.mode)
     ? body.mode : 'daily';
 
   const supabase = getServiceClient();
@@ -68,6 +155,77 @@ export async function POST(req: Request) {
 
   let vocab: any[]       = [];
   let grammarPoint: any  = null;
+
+  // ── PRACTICE (grammar) ────────────────────────────────────────────────────
+  // No new concepts. 10 sentence constructions (En->Sv) drawn strictly from
+  // grammar points AND vocabulary already learned, spanning several points.
+  // The client offers an "end after 6" stop. Every question shows which learned
+  // concepts/phrases it used.
+  if (mode === 'practice') {
+    const PRACTICE_TARGET = 10;
+    const MAX_POINTS = 6;
+
+    const { data: gpRows } = await supabase
+      .from('user_grammar_progress')
+      .select('grammar_point_id, next_review_date, last_reviewed_at, grammar_points(*)')
+      .limit(200);
+    const points = (gpRows ?? [])
+      .filter((r: any) => r.grammar_points)
+      .sort(byDueThenLeastRecent(today))
+      .slice(0, MAX_POINTS)
+      .map((r: any) => r.grammar_points);
+    if (!points.length) return NextResponse.json({ error: 'nothing_to_practice' }, { status: 400 });
+
+    const { data: ctx } = await supabase.from('user_progress')
+      .select('word_id, words(*)')
+      .order('last_reviewed_at', { ascending: false, nullsFirst: false })
+      .limit(12);
+    const practiceVocab = (ctx ?? []).map((p: any) => p.words).filter(Boolean);
+    const primaryWordId = practiceVocab[0]?.id ?? null;
+
+    // Gather En->Sv sentences across the points — cached first, generate to fill.
+    const perPoint = Math.max(2, Math.ceil(PRACTICE_TARGET / points.length));
+    const collected: { row: any; point: any }[] = [];
+    for (const pt of points) {
+      if (collected.length >= PRACTICE_TARGET) break;
+      const { data: cached } = await supabase
+        .from('generated_sentences').select('*')
+        .eq('direction', 'en_to_sv').eq('is_excluded', false).eq('grammar_point_id', pt.id)
+        .lt('times_correct', 4)
+        .order('last_shown_at', { ascending: true, nullsFirst: true })
+        .limit(perPoint + 2);
+      let rows = cached ?? [];
+      if (rows.length < perPoint) {
+        rows = [...rows, ...await generateEnToSvSentences(supabase, pt, practiceVocab, perPoint - rows.length, primaryWordId)];
+      }
+      for (const row of rows.slice(0, perPoint)) collected.push({ row, point: pt });
+    }
+    const chosen = shuffle(collected).slice(0, PRACTICE_TARGET);
+    if (!chosen.length) return NextResponse.json({ error: 'generation_failed' }, { status: 502 });
+
+    for (const c of chosen) {
+      await supabase.from('generated_sentences')
+        .update({ times_shown: (c.row.times_shown ?? 0) + 1, last_shown_at: now })
+        .eq('id', c.row.id);
+    }
+
+    const matcher = await buildConceptMatcher(supabase);
+    const en_to_sv = chosen.map((c) => ({
+      sentence_id: c.row.id,
+      prompt: c.row.sentence_en,
+      reference: c.row.sentence_sv,
+      grammarPointId: c.point.id,
+      grammarTitle: c.point.title,
+      isReview: false,
+      conceptsUsed: matcher(c.row.sentence_sv, c.point.title),
+    }));
+
+    return NextResponse.json({
+      vocab: practiceVocab, grammarPoint: null, mode,
+      exercises: { en_to_sv, sv_to_en: [] },
+      grammarFocused: true,
+    });
+  }
 
   // ── DAILY ────────────────────────────────────────────────────────────────
   if (mode === 'daily' || mode === 'extra') {
@@ -355,18 +513,74 @@ Return ONLY valid JSON, no markdown: { ${outKeys.join(', ')} }`;
       .eq('id', row.id);
   }
 
-  const exercises = {
+  // Every exercise carries its own grammar attribution so the client grades it
+  // against the right point (learn sessions mix the new point with older review
+  // sentences from a different point). isReview / conceptsUsed drive the
+  // "which learned concepts were used" panel (see below); they're null here for
+  // the session's main grammar point and populated only on review sentences.
+  const exercises: any = {
     en_to_sv: [...cachedEnToSv, ...newEnToSv].slice(0, NEEDED).map((r: any) => ({
       sentence_id: r.id,
       prompt:      r.sentence_en,
       reference:   r.sentence_sv,
+      grammarPointId: grammarPoint?.id ?? null,
+      grammarTitle:   grammarPoint?.title ?? null,
+      isReview: false,
+      conceptsUsed: null,
     })),
     sv_to_en: [...cachedSvToEn, ...newSvToEn].slice(0, NEEDED).map((r: any) => ({
       sentence_id: r.id,
       prompt:      r.sentence_sv,
       reference:   r.sentence_en,
+      grammarPointId: grammarPoint?.id ?? null,
+      grammarTitle:   grammarPoint?.title ?? null,
+      isReview: false,
+      conceptsUsed: null,
     })),
   };
+
+  // ── LEARN: a small review portion. Alongside the newly-unlocked point, drill
+  //    1–2 En->Sv sentences from an OLDER learned point (due first, else least
+  //    recently touched). These review questions get the concepts-used panel. ─
+  if (mode === 'learn' && grammarPoint) {
+    const REVIEW_N = 2;
+    const { data: revRows } = await supabase
+      .from('user_grammar_progress')
+      .select('grammar_point_id, next_review_date, last_reviewed_at, grammar_points(*)')
+      .neq('grammar_point_id', grammarPoint.id)
+      .limit(200);
+    const revPoint: any = (revRows ?? [])
+      .filter((r: any) => r.grammar_points)
+      .sort(byDueThenLeastRecent(today))[0]?.grammar_points ?? null;
+
+    if (revPoint) {
+      const { data: cached } = await supabase
+        .from('generated_sentences').select('*')
+        .eq('direction', 'en_to_sv').eq('is_excluded', false).eq('grammar_point_id', revPoint.id)
+        .lt('times_correct', 4)
+        .order('last_shown_at', { ascending: true, nullsFirst: true })
+        .limit(REVIEW_N + 2);
+      let rows = (cached ?? []).slice(0, REVIEW_N);
+      if (rows.length < REVIEW_N) {
+        rows = [...rows, ...await generateEnToSvSentences(supabase, revPoint, vocab, REVIEW_N - rows.length, primaryWordId)];
+      }
+      rows = rows.slice(0, REVIEW_N);
+      if (rows.length) {
+        for (const r of rows) {
+          await supabase.from('generated_sentences')
+            .update({ times_shown: (r.times_shown ?? 0) + 1, last_shown_at: now }).eq('id', r.id);
+        }
+        const matcher = await buildConceptMatcher(supabase);
+        for (const r of rows) {
+          exercises.en_to_sv.push({
+            sentence_id: r.id, prompt: r.sentence_en, reference: r.sentence_sv,
+            grammarPointId: revPoint.id, grammarTitle: revPoint.title,
+            isReview: true, conceptsUsed: matcher(r.sentence_sv, revPoint.title),
+          });
+        }
+      }
+    }
+  }
 
   // Grammar-focused sets get the En->Sv tense-priming study aid. Word-drill
   // sessions (vocab-only, and targeted-word where grammar is only incidental

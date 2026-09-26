@@ -3,41 +3,50 @@ import { getServiceClient } from '@/lib/supabase';
 import { topUpItemBuffer } from '@/lib/vocabItems';
 
 // Vocabulary session — pure word acquisition, no sentence practice (that's the
-// grammar flow's job). Two phases the client walks through:
+// grammar flow's job). Three modes, each driving a different client flow:
 //
-//   1. LEARN — base words met for the first time, as a see-Swedish / pick-English
-//              multiple choice, with enrichment shown after.
-//   2. QUIZ  — up to NEW_PER_DAY newly-introduced ITEMS + REVIEW_COUNT spaced-
-//              repetition review items. English is shown, you type the Swedish.
+//   'new'  (default) — the LEARN flow, walked in three phases client-side:
+//        1. INTRODUCE — the NEW_PER_DAY freshly-promoted items, shown one at a
+//           time with the answer + example so they're actually taught.
+//        2. DRILL     — the SAME items again, reshuffled, typed from memory so
+//           they stick. This is each new item's first graded SRS touch.
+//        3. REVIEW    — REVIEW_COUNT old due items, hardest-first (see below).
+//   'practice' — no new items. A pool of PRACTICE_COUNT (50) already-learned
+//        items, hardest-first; the client lets you stop at 25.
+//   'review'   — legacy review-only: REVIEW_ONLY due/least-recent items.
 //
 // Each word expands into several items (dictionary form + inflected forms +
-// phrases), each with its own SRS schedule (table vocab_items). Items are
-// generated ahead of time into a buffer (introduced=false) and promoted here, so
-// this endpoint stays DB-only and fast.
+// phrases), each with its own SRS schedule (table vocab_items). New items are
+// generated ahead of time into a buffer (introduced=false) and promoted here.
 //
-// mode='review' practises what you already know without introducing anything new:
-// no promotion, no MCQ, just a larger pool of due/least-recent review items.
-// Mastered items (status='known') retire from the quiz in both modes.
+// Review ordering — spaced repetition already brings wrong items back *sooner*
+// (a miss resets the interval to 0). On top of that we order each review batch
+// HARDEST-FIRST: most total wrong answers, then highest wrong-rate, then oldest
+// due. So the items you keep missing lead every session.
 
-const NEW_PER_DAY   = 10;
-const REVIEW_COUNT  = 10;   // review items alongside new ones in a normal session
-const REVIEW_ONLY   = 20;   // review items in a review-only session
-const BUFFER_MIN    = 20;   // below this, the client is told to top up the buffer
+const NEW_PER_DAY    = 10;
+const REVIEW_COUNT   = 10;   // review items after the new-item phases in a normal session
+const PRACTICE_COUNT = 50;   // pool size for a practice session (client can stop at 25)
+const REVIEW_ONLY    = 20;   // review items in a legacy review-only session
+const BUFFER_MIN     = 20;   // below this, the client is told to top up the buffer
 
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
+const ITEM_SELECT = '*, words!inner(rank, source, lemma, pos, gender, translation)';
+
+// Hardest-first: absolute misses, then wrong-rate, then oldest due date.
+function byHardest(a: any, b: any): number {
+  const aw = a.times_wrong ?? 0, bw = b.times_wrong ?? 0;
+  if (bw !== aw) return bw - aw;
+  const aRate = aw / ((a.times_correct ?? 0) + aw || 1);
+  const bRate = bw / ((b.times_correct ?? 0) + bw || 1);
+  if (bRate !== aRate) return bRate - aRate;
+  return (a.next_review_date ?? '9999') < (b.next_review_date ?? '9999') ? -1 : 1;
 }
-
-const ITEM_SELECT = '*, words!inner(rank, source, lemma, pos, gender, translation, enrichment)';
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  const reviewOnly = body?.mode === 'review';
+  const mode: 'new' | 'review' | 'practice' =
+    body?.mode === 'review' ? 'review' : body?.mode === 'practice' ? 'practice' : 'new';
+  const isNewFlow = mode === 'new';
 
   const supabase = getServiceClient();
   const today = new Date().toISOString().slice(0, 10);
@@ -47,11 +56,9 @@ export async function POST(req: Request) {
     .from('streak_state').select('vocab_new_date, vocab_new_today').eq('id', 1).single();
   const newTodayBefore = st?.vocab_new_date === today ? (st?.vocab_new_today ?? 0) : 0;
 
+  // ── Promote new items (LEARN flow only) ──────────────────────────────────
   let promote: any[] = [];
-  let newBaseWords: any[] = [];
-
-  // ── Promote new items + set up the MCQ learn phase (skipped in review mode) ─
-  if (!reviewOnly) {
+  if (isNewFlow) {
     const fetchBuffer = async () => {
       const { data } = await supabase
         .from('vocab_items').select(ITEM_SELECT).eq('introduced', false).limit(120);
@@ -78,11 +85,10 @@ export async function POST(req: Request) {
         .from('streak_state')
         .update({ vocab_new_date: today, vocab_new_today: newTodayBefore + promoteIds.length })
         .eq('id', 1);
-    }
 
-    // Base words met for the first time → the MCQ learn phase.
-    const promoteWordIds = [...new Set(promote.map((i) => i.word_id))];
-    if (promoteWordIds.length) {
+      // Register the base words in user_progress the first time we meet them, so
+      // the dashboard's "words started" and mastery roll-up work.
+      const promoteWordIds = [...new Set(promote.map((i) => i.word_id))];
       const { data: existingProg } = await supabase
         .from('user_progress').select('word_id').in('word_id', promoteWordIds);
       const known = new Set((existingProg ?? []).map((p: any) => p.word_id));
@@ -91,90 +97,60 @@ export async function POST(req: Request) {
         await supabase.from('user_progress').insert(
           newWordIds.map((id) => ({ word_id: id, status: 'learning', next_review_date: today })),
         );
-        const { data: wrows } = await supabase
-          .from('words').select('id, lemma, pos, gender, translation, enrichment').in('id', newWordIds);
-        newBaseWords = wrows ?? [];
       }
     }
   }
 
-  // Multiple-choice distractors from other words' translations.
-  const { data: pool } = await supabase
-    .from('words').select('id, translation, pos').not('translation', 'is', null);
-  const newBaseSet = new Set(newBaseWords.map((w) => w.id));
-  const distractorPool = (pool ?? []).filter((w: any) => w.translation && !newBaseSet.has(w.id));
-  const optionsFor = (word: any): string[] => {
-    const correct = (word.translation ?? '').trim();
-    const samePos = shuffle(distractorPool.filter((w: any) => w.pos === word.pos && (w.translation ?? '').trim() !== correct));
-    const anyPos  = shuffle(distractorPool.filter((w: any) => (w.translation ?? '').trim() !== correct));
-    const picked: string[] = [];
-    const seen = new Set([correct.toLowerCase()]);
-    for (const cand of [...samePos, ...anyPos]) {
-      const t = (cand.translation ?? '').trim();
-      if (seen.has(t.toLowerCase())) continue;
-      seen.add(t.toLowerCase());
-      picked.push(t);
-      if (picked.length === 2) break;
-    }
-    return shuffle([correct, ...picked]);
-  };
-
-  const learn = newBaseWords.map((w) => ({
-    id: w.id, lemma: w.lemma, pos: w.pos, gender: w.gender,
-    answer: (w.translation ?? '').trim(),
-    options: optionsFor(w),
-    enrichment: w.enrichment ?? null,
-  }));
-
-  // ── Review items: SRS-due first, topped up by least-recently-seen. Mastered
-  //    items stay in the schedule (they just sit far in the future via a long
-  //    interval, so they rarely come due), matching standard spaced repetition. ─
+  // ── Review / practice pool: SRS-due first, hardest-first, topped up by the
+  //    least-recently-seen. Mastered items stay in the schedule (long interval)
+  //    so they rarely surface, matching standard spaced repetition. ──────────
   const promoteIds = promote.map((i) => i.id);
-  const reviewTarget = reviewOnly ? REVIEW_ONLY : REVIEW_COUNT;
+  const target = mode === 'practice' ? PRACTICE_COUNT : mode === 'review' ? REVIEW_ONLY : REVIEW_COUNT;
 
+  // Pull a wide due pool so hardest-first ordering is meaningful, then trim.
   let dueQ = supabase
     .from('vocab_items').select(ITEM_SELECT)
     .eq('introduced', true).lte('next_review_date', today)
     .order('next_review_date', { ascending: true })
-    .limit(reviewTarget + promoteIds.length);
+    .limit(Math.max(target * 3, 60) + promoteIds.length);
   if (promoteIds.length) dueQ = dueQ.not('id', 'in', `(${promoteIds.join(',')})`);
   const { data: dueRows } = await dueQ;
   const promoteIdSet = new Set(promoteIds);
-  let review = (dueRows ?? []).filter((r: any) => !promoteIdSet.has(r.id));
+  let review = (dueRows ?? []).filter((r: any) => !promoteIdSet.has(r.id)).sort(byHardest).slice(0, target);
 
   // If not enough is due, top up with the least-recently-seen introduced items
-  // (this is also what keeps a review-only session from ever running empty).
-  if (review.length < reviewTarget) {
+  // (this is also what keeps a practice/review session from ever running empty).
+  if (review.length < target) {
     const have = new Set([...promoteIds, ...review.map((r: any) => r.id)]);
     const haveArr = [...have];
     let topQ = supabase
       .from('vocab_items').select(ITEM_SELECT)
       .eq('introduced', true)
       .order('last_reviewed_at', { ascending: true, nullsFirst: true })
-      .limit(reviewTarget + haveArr.length);
+      .limit(target + haveArr.length);
     if (haveArr.length) topQ = topQ.not('id', 'in', `(${haveArr.join(',')})`);
     const { data: extra } = await topQ;
     review = [...review, ...(extra ?? []).filter((r: any) => !have.has(r.id))];
   }
-  review = review.slice(0, reviewTarget);
+  review = review.slice(0, target);
 
-  // ── Build the quiz (new + review, shuffled) ──────────────────────────────
-  const toQuiz = (it: any, isNew: boolean) => ({
-    id: it.id,               // vocab_items id — grade against this
-    wordId: it.word_id,
-    prompt: it.prompt_en,    // English shown
-    label: it.label,
-    kind: it.kind,
-    isNew,
-    note: it.note ?? null,
-    example: it.example ?? null,
+  // ── Shape items for the client ───────────────────────────────────────────
+  // Intro items carry the answer + example so phase 1 can actually teach them;
+  // review/drill items are answered from memory (the client already holds the
+  // intro answers for the drill phase — this is a personal, non-adversarial app).
+  const toIntro = (it: any) => ({
+    id: it.id, wordId: it.word_id, prompt: it.prompt_en, label: it.label, kind: it.kind,
+    answer: it.answer_sv, note: it.note ?? null, example: it.example ?? null,
   });
-  const quiz = shuffle([
-    ...promote.map((i) => toQuiz(i, true)),
-    ...review.map((i) => toQuiz(i, false)),
-  ]);
+  const toReview = (it: any) => ({
+    id: it.id, wordId: it.word_id, prompt: it.prompt_en, label: it.label, kind: it.kind,
+    isNew: false, note: it.note ?? null, example: it.example ?? null,
+  });
 
-  if (!learn.length && !quiz.length) {
+  const intro = isNewFlow ? promote.map(toIntro) : [];
+  const reviewItems = review.map(toReview);
+
+  if (!intro.length && !reviewItems.length) {
     return NextResponse.json({ error: 'nothing_to_practice' }, { status: 400 });
   }
 
@@ -182,9 +158,9 @@ export async function POST(req: Request) {
     .from('vocab_items').select('*', { count: 'exact', head: true }).eq('introduced', false);
 
   return NextResponse.json({
-    learn,
-    quiz,
-    mode: reviewOnly ? 'review' : 'new',
+    mode,
+    intro,                 // phase 1 + 2 source (new flow only)
+    review: reviewItems,   // phase 3 (new flow) / the whole session (practice/review)
     newTodayBefore,
     introducedNow: promote.length,
     dailyTargetMet: newTodayBefore + promote.length >= NEW_PER_DAY,

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/supabase';
 import { READY_FOR_NEW } from '@/lib/config';
 
-const PRACTICE_MODES = ['words', 'grammar', 'extra'];
+const PRACTICE_MODES = ['words', 'grammar', 'extra', 'practice'];
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));

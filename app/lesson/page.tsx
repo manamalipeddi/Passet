@@ -2,9 +2,14 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 
-type Mode = 'daily' | 'extra' | 'learn' | 'targeted' | 'words' | 'grammar';
+type Mode = 'daily' | 'extra' | 'learn' | 'targeted' | 'words' | 'grammar' | 'practice';
 type Vocab = { id: string; lemma: string; pos: string; gender: string | null; forms: any; example_sv: string; example_en: string };
-type Exercise = { prompt: string; reference: string; direction: 'en_to_sv' | 'sv_to_en'; sentence_id?: string };
+type Concepts = { grammar: string[]; words: string[]; phrases: string[] };
+type Exercise = {
+  prompt: string; reference: string; direction: 'en_to_sv' | 'sv_to_en'; sentence_id?: string;
+  grammarPointId?: string | null; grammarTitle?: string | null;
+  isReview?: boolean; conceptsUsed?: Concepts | null;
+};
 type CarryItem = { direction: 'en_to_sv' | 'sv_to_en'; prompt: string; reference: string; userAnswer: string; correct: boolean };
 // Tense-priming study aid for a grammar-focused En->Sv question (see /api/lesson/variants)
 type TenseForm = { tense: string; en: string; sv: string; isMain?: boolean };
@@ -18,6 +23,7 @@ const LOADING_MSG: Record<Mode, string> = {
   targeted: 'Building targeted session…',
   words:    'Pulling your word practice together…',
   grammar:  'Setting up grammar practice…',
+  practice: 'Building your grammar practice…',
 };
 
 const STAGE_TAG: Record<Mode, string> = {
@@ -27,7 +33,11 @@ const STAGE_TAG: Record<Mode, string> = {
   targeted: 'targeted practice',
   words:    'word practice',
   grammar:  'grammar focus',
+  practice: 'grammar practice',
 };
+
+// Grammar practice runs 10 sentence constructions but can be ended after this many.
+const PRACTICE_MIN_TO_END = 6;
 
 export default function Lesson() {
   return (
@@ -40,7 +50,7 @@ export default function Lesson() {
 function LessonInner() {
   const params  = useSearchParams();
   const rawMode = params.get('mode') ?? 'daily';
-  const mode: Mode = (['daily', 'extra', 'learn', 'targeted', 'words', 'grammar'] as const).includes(rawMode as Mode)
+  const mode: Mode = (['daily', 'extra', 'learn', 'targeted', 'words', 'grammar', 'practice'] as const).includes(rawMode as Mode)
     ? (rawMode as Mode) : 'daily';
   const wordId   = params.get('wordId')    ?? undefined;
   const grammarId = params.get('grammarId') ?? undefined;
@@ -84,8 +94,8 @@ function LessonInner() {
         ];
         setEx(ex);
         setGrammarFocused(!!data.grammarFocused);
-        // 'extra' and 'words' have no grammar intro — drop straight into sentences
-        setStage(mode === 'extra' || mode === 'words' ? 'exercise' : 'vocab');
+        // 'extra', 'words' and 'practice' have no grammar intro — go to sentences
+        setStage(mode === 'extra' || mode === 'words' || mode === 'practice' ? 'exercise' : 'vocab');
       })
       .catch(() => setStage('error'));
   }, [mode, wordId, grammarId]);
@@ -120,8 +130,8 @@ function LessonInner() {
         reference:      current.reference,
         userAnswer:     answer,
         wordIds:        vocab.map((v) => v.id),
-        grammarPointId: grammarPoint?.id,
-        grammarTitle:   grammarPoint?.title,
+        grammarPointId: current.grammarPointId ?? grammarPoint?.id,
+        grammarTitle:   current.grammarTitle ?? grammarPoint?.title,
         sentenceId:     current.sentence_id,
       }),
     });
@@ -344,6 +354,36 @@ function LessonInner() {
     );
   }
 
+  // "Which learned concepts/phrases were used" — shown after answering. The
+  // server only populates conceptsUsed where it should appear: every grammar
+  // practice question, and the review questions inside a grammar learn session.
+  function renderConceptsUsed() {
+    const c = exercises[idx]?.conceptsUsed;
+    if (!c) return null;
+    const rows: [string, string[]][] = [
+      ['Grammar', c.grammar ?? []],
+      ['Words', c.words ?? []],
+      ['Phrases', c.phrases ?? []],
+    ].filter(([, v]) => (v as string[]).length > 0) as [string, string[]][];
+    if (!rows.length) return null;
+    return (
+      <div style={{
+        marginTop: 12, padding: 14,
+        border: '2.5px solid var(--ink)', borderRadius: 12,
+        background: 'var(--surface)', fontSize: 14, lineHeight: 1.6,
+      }}>
+        <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-muted)', marginBottom: 8 }}>
+          Learned concepts in this sentence
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {rows.map(([label, vals]) => (
+            <div key={label}><span style={{ fontWeight: 700 }}>{label}:</span> {vals.join(', ')}</div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (stage === 'loading') return <div className="wrap"><div className="card">{LOADING_MSG[mode]}</div></div>;
   if (stage === 'error')   return <div className="wrap"><div className="card">Couldn't reach the tutor. Check your connection and try again.</div></div>;
   if (stage === 'handoff') return <div className="wrap"><div className="card">Saving your flagged questions to the tutor chat…</div></div>;
@@ -410,6 +450,7 @@ function LessonInner() {
               </div>
 
               {renderTenseAid(true)}
+              {renderConceptsUsed()}
 
               {/* Dig deeper / flag for chat */}
               <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap', gap: 10, marginTop: 12 }}>
@@ -456,6 +497,12 @@ function LessonInner() {
                   </button>
                 )}
               </div>
+              {/* Grammar practice: bail out early once enough is done — still counts. */}
+              {mode === 'practice' && idx + 1 >= PRACTICE_MIN_TO_END && idx + 1 < exercises.length && (
+                <button className="btn btn-plain" style={{ marginTop: 10 }} onClick={finish}>
+                  End practice here ({idx + 1} done) →
+                </button>
+              )}
             </>
           )}
         </div>
@@ -466,11 +513,13 @@ function LessonInner() {
   // Done stage
   const doneTag = mode === 'learn' ? 'new material added'
     : mode === 'targeted' ? 'targeted session'
+    : mode === 'practice' ? 'grammar practice'
     : (mode === 'extra' || alreadyDone) ? 'bonus round'
     : 'done for today';
 
   const doneHead = mode === 'learn' ? 'Added to your curriculum.'
     : mode === 'targeted' ? 'Targeted practice done. 🎯'
+    : mode === 'practice' ? 'Nice grammar practice. 💪'
     : (mode === 'extra' || alreadyDone) ? 'Nice, extra reps in the bank.'
     : 'Snyggt! Session finished.';
 

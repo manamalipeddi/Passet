@@ -1,14 +1,11 @@
 'use client';
-import { useEffect, useRef, useState, Suspense } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 type Use = { sv: string; en: string };
-type Enrichment = { uses: Use[]; note: string };
-type EnrichState = Enrichment | 'loading' | null;   // null = tried, none available
-
-type LearnItem = {
-  id: string; lemma: string; pos: string | null; gender: string | null;
-  answer: string; options: string[]; enrichment: Enrichment | null;
+type IntroItem = {
+  id: string; wordId: string; prompt: string; label: string | null; kind: string;
+  answer: string; note: string | null; example: Use | null;
 };
 type QuizItem = {
   id: string; wordId: string; prompt: string; label: string | null; kind: string;
@@ -18,6 +15,19 @@ type Feedback = {
   correct: boolean; comment: string; corrected: string;
   userAnswerMeaning: string | null; mastered: boolean;
 };
+type SegKind = 'drill' | 'review' | 'practice';
+type Segment = { kind: SegKind; items: QuizItem[] };
+
+const PRACTICE_MIN_TO_END = 25;   // practice counts as done once you've answered this many
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 export default function VocabPage() {
   return (
@@ -29,84 +39,82 @@ export default function VocabPage() {
 
 function VocabInner() {
   const params = useSearchParams();
-  const reviewOnly = params.get('mode') === 'review';
+  const mode: 'new' | 'review' | 'practice' =
+    params.get('mode') === 'review' ? 'review' : params.get('mode') === 'practice' ? 'practice' : 'new';
 
-  const [stage, setStage] = useState<'loading' | 'learn' | 'quiz' | 'done' | 'error'>('loading');
-  const [learn, setLearn] = useState<LearnItem[]>([]);
-  const [quiz, setQuiz]   = useState<QuizItem[]>([]);
-  const [meta, setMeta]   = useState<{ introducedNow: number; dailyTargetMet: boolean }>({ introducedNow: 0, dailyTargetMet: false });
+  const [stage, setStage] = useState<'loading' | 'intro' | 'quiz' | 'done' | 'error'>('loading');
+  const [intro, setIntro] = useState<IntroItem[]>([]);
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [meta, setMeta] = useState<{ introducedNow: number; dailyTargetMet: boolean }>({ introducedNow: 0, dailyTargetMet: false });
 
-  // Enrichment (word-level) is used only in the learn phase; fetched lazily and
-  // prefetched a word ahead so the session loads instantly.
-  const [enrichMap, setEnrichMap] = useState<Record<string, EnrichState>>({});
-  const requested = useRef<Set<string>>(new Set());
+  // Intro phase (new flow only)
+  const [ii, setII] = useState(0);
+  const [introTyped, setIntroTyped] = useState('');
 
-  // Learn phase
-  const [li, setLi] = useState(0);
-  const [picked, setPicked] = useState<string | null>(null);
-
-  // Quiz phase
+  // Quiz phases (drill / review / practice)
+  const [segIdx, setSegIdx] = useState(0);
   const [qi, setQi] = useState(0);
   const [answer, setAnswer] = useState('');
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [checking, setChecking] = useState(false);
+  const [answered, setAnswered] = useState(0);   // graded answers this session (for score + practice cap)
   const [score, setScore] = useState(0);
 
   // Done
   const [streak, setStreak] = useState<number | null>(null);
 
-  function prefetchEnrichment(id?: string) {
-    if (!id || requested.current.has(id)) return;
-    requested.current.add(id);
-    setEnrichMap((m) => ({ ...m, [id]: 'loading' }));
-    fetch('/api/vocab/enrich', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ wordId: id }),
-    })
-      .then((r) => r.json())
-      .then((d) => setEnrichMap((m) => ({ ...m, [id]: (d?.enrichment as Enrichment) ?? null })))
-      .catch(() => setEnrichMap((m) => ({ ...m, [id]: null })));
-  }
-
   useEffect(() => {
     fetch('/api/vocab/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: reviewOnly ? 'review' : 'new' }),
+      body: JSON.stringify({ mode }),
     })
       .then((r) => r.json())
       .then((data) => {
         if (data.error) { setStage('error'); return; }
-        const learnItems: LearnItem[] = data.learn ?? [];
-        setLearn(learnItems);
-        setQuiz(data.quiz ?? []);
+        const introItems: IntroItem[] = data.intro ?? [];
+        const reviewItems: QuizItem[] = data.review ?? [];
+        setIntro(introItems);
         setMeta({ introducedNow: data.introducedNow ?? 0, dailyTargetMet: !!data.dailyTargetMet });
-        const seed: Record<string, EnrichState> = {};
-        for (const w of learnItems) if (w.enrichment) { seed[w.id] = w.enrichment; requested.current.add(w.id); }
-        setEnrichMap(seed);
-        setStage(learnItems.length ? 'learn' : (data.quiz ?? []).length ? 'quiz' : 'done');
+
+        if (mode === 'practice') {
+          setSegments([{ kind: 'practice', items: reviewItems }]);
+        } else if (mode === 'review') {
+          setSegments([{ kind: 'review', items: reviewItems }]);
+        } else {
+          // New flow: drill the just-introduced items, then review the old ones.
+          const segs: Segment[] = [];
+          if (introItems.length) {
+            segs.push({ kind: 'drill', items: shuffle(introItems.map(introToQuiz)) });
+          }
+          if (reviewItems.length) segs.push({ kind: 'review', items: reviewItems });
+          setSegments(segs);
+        }
+
+        if (mode === 'new' && introItems.length) setStage('intro');
+        else if (reviewItems.length) setStage('quiz');
+        else setStage('done');
+
         if (data.bufferLow) fetch('/api/vocab/topup', { method: 'POST' }).catch(() => {});
       })
       .catch(() => setStage('error'));
-  }, [reviewOnly]);
+  }, [mode]);
 
-  // Prefetch the current + next word's enrichment while it's being read.
-  useEffect(() => {
-    if (stage !== 'learn') return;
-    prefetchEnrichment(learn[li]?.id);
-    prefetchEnrichment(learn[li + 1]?.id);
-  }, [stage, li, learn]);
-
-  function nextLearn() {
-    setPicked(null);
-    if (li + 1 < learn.length) setLi(li + 1);
-    else setStage(quiz.length ? 'quiz' : 'done');
+  function introToQuiz(it: IntroItem): QuizItem {
+    return { id: it.id, wordId: it.wordId, prompt: it.prompt, label: it.label, kind: it.kind, isNew: true, note: it.note, example: it.example };
   }
+
+  function nextIntro() {
+    setIntroTyped('');
+    if (ii + 1 < intro.length) setII(ii + 1);
+    else setStage(segments.length ? 'quiz' : 'done');
+  }
+
+  const seg = segments[segIdx];
 
   async function submitQuiz() {
     setChecking(true);
-    const item = quiz[qi];
+    const item = seg.items[qi];
     try {
       const res = await fetch('/api/vocab/grade', {
         method: 'POST',
@@ -115,6 +123,7 @@ function VocabInner() {
       });
       const fb: Feedback = await res.json();
       setFeedback(fb);
+      setAnswered((n) => n + 1);
       if (fb.correct) setScore((s) => s + 1);
     } catch {
       setFeedback({ correct: false, comment: "Couldn't reach the tutor — try again.", corrected: '', userAnswerMeaning: null, mastered: false });
@@ -123,10 +132,8 @@ function VocabInner() {
     }
   }
 
-  async function nextQuiz() {
-    setFeedback(null);
-    setAnswer('');
-    if (qi + 1 < quiz.length) { setQi(qi + 1); return; }
+  async function complete() {
+    // Vocab always completes as a 'words' session (updates the vocab streak/last-seen).
     const data = await fetch('/api/lesson/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -136,95 +143,86 @@ function VocabInner() {
     setStage('done');
   }
 
+  async function nextQuiz() {
+    setFeedback(null);
+    setAnswer('');
+    if (qi + 1 < seg.items.length) { setQi(qi + 1); return; }
+    // Segment finished — move to the next one, or complete the session.
+    if (segIdx + 1 < segments.length) { setSegIdx(segIdx + 1); setQi(0); return; }
+    await complete();
+  }
+
+  // Practice can be ended early once you've answered enough — it still counts.
+  async function endPractice() {
+    setFeedback(null);
+    await complete();
+  }
+
   // ── LOADING / ERROR ──────────────────────────────────────────────────────
-  if (stage === 'loading') return <div className="wrap"><div className="card">{reviewOnly ? 'Pulling your review together…' : "Putting today's words together…"}</div></div>;
+  if (stage === 'loading') return <div className="wrap"><div className="card">{mode === 'new' ? "Putting today's words together…" : 'Pulling your practice together…'}</div></div>;
   if (stage === 'error')   return <div className="wrap"><div className="card">Couldn't load your words. Check your connection and try again.</div></div>;
 
-  // ── LEARN PHASE ──────────────────────────────────────────────────────────
-  if (stage === 'learn') {
-    const w = learn[li];
-    const revealed = picked !== null;
-    const enr = enrichMap[w.id];
+  // ── INTRO PHASE (new flow) ───────────────────────────────────────────────
+  if (stage === 'intro') {
+    const item = intro[ii];
     return (
       <div className="wrap">
         <span className="tag">new words</span>
-        <span className="pill" style={{ marginLeft: 8 }}>{li + 1} of {learn.length}</span>
+        <span className="pill" style={{ marginLeft: 8 }}>{ii + 1} of {intro.length}</span>
         <div className="card">
-          <p className="muted" style={{ marginTop: 0 }}>What does this word mean?</p>
-          <p style={{ fontSize: 30, fontWeight: 700, margin: '4px 0 2px', fontFamily: "'Space Grotesk',sans-serif" }}>{w.lemma}</p>
-          <p className="muted" style={{ marginTop: 0 }}>{w.pos}{w.gender ? `, ${w.gender}` : ''}</p>
+          <p className="muted" style={{ marginTop: 0 }}>New{item.label ? ` · ${item.label}` : ''} — meet it, then type it once to lock it in.</p>
+          <p style={{ fontSize: 16, margin: '4px 0 2px' }}>{item.prompt}</p>
+          <p style={{ fontSize: 30, fontWeight: 700, margin: '2px 0 10px', fontFamily: "'Space Grotesk',sans-serif" }}>{item.answer}</p>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
-            {w.options.map((opt) => {
-              const isCorrect = opt === w.answer;
-              const isPicked  = opt === picked;
-              let bg = 'var(--surface)';
-              if (revealed && isCorrect) bg = '#DCEEE3';
-              else if (revealed && isPicked) bg = '#FCE9D8';
-              return (
-                <button
-                  key={opt}
-                  className="btn"
-                  style={{ background: bg, color: 'var(--ink)', textAlign: 'left', textTransform: 'none' }}
-                  disabled={revealed}
-                  onClick={() => setPicked(opt)}
-                >
-                  {opt}{revealed && isCorrect ? '  ✓' : revealed && isPicked ? '  ✗' : ''}
-                </button>
-              );
-            })}
-          </div>
-
-          {revealed && (
-            <>
-              <div style={{ marginTop: 16, padding: 14, border: '2.5px solid var(--ink)', borderRadius: 12, background: 'var(--bg)' }}>
-                {(enr === 'loading' || enr === undefined) && (
-                  <p className="muted" style={{ margin: 0, fontStyle: 'italic' }}>Loading examples…</p>
-                )}
-                {enr && enr !== 'loading' && (enr.note || enr.uses?.length > 0) && (
-                  <>
-                    {enr.note && <p style={{ margin: '0 0 10px', fontSize: 14, lineHeight: 1.5 }}>💡 {enr.note}</p>}
-                    {enr.uses?.length > 0 && (
-                      <>
-                        <div className="eyebrow" style={{ marginBottom: 6 }}>In use</div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          {enr.uses.map((u, i) => (
-                            <div key={i} style={{ fontSize: 14, lineHeight: 1.4 }}>
-                              <div style={{ fontWeight: 600 }}>{u.sv}</div>
-                              <div className="muted">{u.en}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </>
-                )}
-                {enr === null && (
-                  <p className="muted" style={{ margin: 0 }}><strong>{w.lemma}</strong> — {w.answer}</p>
-                )}
-              </div>
-              <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={nextLearn}>
-                {li + 1 < learn.length ? 'Next word →' : quiz.length ? 'Start the quiz →' : 'Finish →'}
-              </button>
-            </>
+          {(item.note || item.example) && (
+            <div style={{ margin: '4px 0 12px', padding: 12, border: '2px dashed var(--ink)', borderRadius: 10, fontSize: 13, lineHeight: 1.5 }}>
+              {item.note && <div>💡 {item.note}</div>}
+              {item.example && (
+                <div style={{ marginTop: item.note ? 6 : 0 }}>
+                  <span style={{ fontWeight: 600 }}>{item.example.sv}</span>
+                  <span className="muted"> — {item.example.en}</span>
+                </div>
+              )}
+            </div>
           )}
+
+          <input
+            value={introTyped}
+            onChange={(e) => setIntroTyped(e.target.value)}
+            placeholder="type it here…"
+            autoFocus
+            onKeyDown={(e) => { if (e.key === 'Enter' && introTyped.trim()) nextIntro(); }}
+          />
+          <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={nextIntro} disabled={!introTyped.trim()}>
+            {ii + 1 < intro.length ? 'Next word →' : 'Start the drill →'}
+          </button>
         </div>
       </div>
     );
   }
 
-  // ── QUIZ PHASE ───────────────────────────────────────────────────────────
-  if (stage === 'quiz') {
-    const item = quiz[qi];
+  // ── QUIZ PHASES (drill / review / practice) ──────────────────────────────
+  if (stage === 'quiz' && seg) {
+    const item = seg.items[qi];
+    const isPractice = seg.kind === 'practice';
+    const tagText = seg.kind === 'drill' ? 'drill' : seg.kind === 'practice' ? 'practice' : 'review';
+    // Items answered in this segment so far — drives the practice countdown.
+    const answeredInSeg = qi + (feedback ? 1 : 0);
+    const remaining = seg.items.length - answeredInSeg;
+    const canEndPractice = isPractice && answered >= PRACTICE_MIN_TO_END;
     return (
       <div className="wrap">
-        <span className="tag" style={{ background: 'var(--green)', color: '#FAF3E7' }}>{reviewOnly ? 'review' : 'quiz'}</span>
-        <span className="pill" style={{ marginLeft: 8 }}>{qi + 1} of {quiz.length}</span>
+        <span className="tag" style={{ background: 'var(--green)', color: '#FAF3E7' }}>{tagText}</span>
+        <span className="pill" style={{ marginLeft: 8 }}>
+          {isPractice ? `${remaining} of ${seg.items.length} left` : `${qi + 1} of ${seg.items.length}`}
+        </span>
         <div className="card">
-          <p className="muted" style={{ marginTop: 0 }}>Type the Swedish for:</p>
+          <p className="muted" style={{ marginTop: 0 }}>
+            {seg.kind === 'drill' ? 'From memory now — type the Swedish for:' : 'Type the Swedish for:'}
+          </p>
           <p style={{ fontSize: 24, fontWeight: 700, margin: '4px 0 2px' }}>{item.prompt}</p>
           <p className="muted" style={{ marginTop: 0 }}>
-            {item.label ? `${item.label} · ` : ''}{item.isNew ? 'from today' : 'review'}
+            {item.label ? `${item.label} · ` : ''}{seg.kind === 'drill' ? 'from today' : 'review'}
           </p>
 
           <input
@@ -277,9 +275,21 @@ function VocabInner() {
               )}
 
               <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={nextQuiz}>
-                {qi + 1 < quiz.length ? 'Next' : 'Finish'}
+                {qi + 1 < seg.items.length ? 'Next' : segIdx + 1 < segments.length ? 'Next phase →' : 'Finish'}
               </button>
+              {canEndPractice && (
+                <button className="btn btn-plain" style={{ marginTop: 10 }} onClick={endPractice}>
+                  End practice here ({answered} done) →
+                </button>
+              )}
             </>
+          )}
+
+          {/* Before answering, still let a long practice run stop at the 25 mark. */}
+          {!feedback && canEndPractice && (
+            <button className="btn btn-plain" style={{ marginTop: 10 }} onClick={endPractice}>
+              End practice here ({answered} done) →
+            </button>
           )}
         </div>
       </div>
@@ -287,16 +297,15 @@ function VocabInner() {
   }
 
   // ── DONE ─────────────────────────────────────────────────────────────────
-  const quizTotal = quiz.length;
   return (
     <div className="wrap">
       <div className="card" style={{ textAlign: 'center' }}>
         <span className="tag">done</span>
-        <h2 style={{ marginTop: 10 }}>{reviewOnly ? 'Nice review. 💪' : 'Snyggt! Vocabulary done.'}</h2>
-        {quizTotal > 0 && <p className="muted">You got {score} of {quizTotal} right ({Math.round((score / quizTotal) * 100)}%).</p>}
+        <h2 style={{ marginTop: 10 }}>{mode === 'new' ? 'Snyggt! Vocabulary done.' : 'Nice practice. 💪'}</h2>
+        {answered > 0 && <p className="muted">You got {score} of {answered} right ({Math.round((score / answered) * 100)}%).</p>}
         {streak !== null && <p className="muted">🔥 {streak} day{streak === 1 ? '' : 's'} running.</p>}
 
-        {!reviewOnly && (
+        {mode === 'new' && (
           <div style={{
             marginTop: 16, padding: 16, border: '3px solid var(--ink)', borderRadius: 12,
             background: meta.dailyTargetMet ? 'var(--mustard)' : 'var(--green)',
@@ -312,13 +321,13 @@ function VocabInner() {
           </div>
         )}
 
-        {reviewOnly ? (
-          <a href="/vocab?mode=review"><button className="btn btn-secondary" style={{ marginTop: 12 }}>Practice more →</button></a>
-        ) : (
+        {mode === 'new' ? (
           <>
-            <a href="/vocab"><button className="btn btn-secondary" style={{ marginTop: 12 }}>Do more words →</button></a>
-            <a href="/vocab?mode=review"><button className="btn btn-primary" style={{ marginTop: 10 }}>Practice without new words →</button></a>
+            <a href="/vocab"><button className="btn btn-secondary" style={{ marginTop: 12 }}>Learn more words →</button></a>
+            <a href="/vocab?mode=practice"><button className="btn btn-primary" style={{ marginTop: 10 }}>Practice without new words →</button></a>
           </>
+        ) : (
+          <a href="/vocab?mode=practice"><button className="btn btn-secondary" style={{ marginTop: 12 }}>Practice more →</button></a>
         )}
         <a href="/"><button className="btn btn-plain" style={{ marginTop: 10 }}>Back to dashboard</button></a>
       </div>
