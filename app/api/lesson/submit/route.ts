@@ -12,7 +12,9 @@ A reference correct answer is: "${reference}".
 The learner wrote: "${userAnswer}".
 The grammar point being practiced is: "${grammarTitle || 'general'}".
 
-Judge their answer on meaning and correctness, not just an exact string match against the reference (other valid phrasings are fine). Return ONLY valid JSON, no markdown, no extra text:
+Judge their answer on meaning and correctness, not just an exact string match against the reference (other valid phrasings are fine).
+STRICT on the Swedish alphabet: å, ä, ö and é are distinct letters, not accented a/o/e. A missing or wrong diacritic makes a different word (e.g. "vara" = to be vs "våra" = our) and MUST be marked incorrect. Capitalization and comma placement that only differ from English are NOT errors — do not mark them wrong, but note the difference briefly in the feedback when it occurs (Swedish lowercases weekdays, months, languages and nationalities).
+Return ONLY valid JSON, no markdown, no extra text:
 {"correct": true or false, "feedback": "one or two encouraging sentences explaining what was right or wrong, tied to the grammar point where relevant", "corrected": "a corrected or improved version of their answer", "user_answer_translation": "only when direction is en_to_sv AND the answer is incorrect: a plain English gloss of what the learner's Swedish actually means, word-for-word if needed, so they can see what their words said vs. what was intended — otherwise null"}`;
 
   let result;

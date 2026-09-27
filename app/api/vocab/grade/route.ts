@@ -10,16 +10,26 @@ import { updateSrs } from '@/lib/srs';
 // the item's SRS schedule is updated, and the parent word is marked mastered once
 // all of its items are.
 
-// Fold å/ä→a, ö→o, é→e, strip leading "att "/"en "/"ett ", collapse whitespace.
+// Normalize for comparison WITHOUT touching Swedish letters: å ä ö é are
+// distinct letters that change meaning (vara "to be" ≠ våra "our"), so they are
+// preserved. We only lowercase (capitalization isn't graded), strip a leading
+// "att "/"en "/"ett ", drop punctuation (commas/periods aren't graded), and
+// collapse whitespace. NFC first so a decomposed å survives the punctuation strip.
 function normalize(s: string): string {
   return (s ?? '')
+    .normalize('NFC')
     .toLowerCase()
     .trim()
     .replace(/^(att|en|ett)\s+/, '')
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/[^a-z0-9åäöé\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// ASCII-fold Swedish letters — used ONLY to detect when the sole difference
+// between two answers is a diacritic (so we can refuse to forgive it as a typo).
+function foldDiacritics(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
 
 function levenshtein(a: string, b: string): number {
@@ -45,8 +55,10 @@ function deterministicMatch(userAnswer: string, accepted: string[]): boolean {
     if (!a) continue;
     if (user === a) return true;
     // Typo tolerance: one edit, but only when the phrase is long enough that a
-    // single slip can't collapse it into a genuinely different answer.
-    if (a.length >= 5 && levenshtein(user, a) <= 1) return true;
+    // single slip can't collapse it into a genuinely different answer — AND the
+    // difference is a real letter typo, never just a missing/wrong diacritic
+    // (foldDiacritics equal ⇒ the only difference was å/ä/ö/é, which is wrong).
+    if (a.length >= 5 && levenshtein(user, a) <= 1 && foldDiacritics(user) !== foldDiacritics(a)) return true;
   }
   return false;
 }
@@ -78,7 +90,9 @@ The learner typed: "${userAnswer ?? ''}".
 
 Grade fairly. Swedish has flexibility — accept ANY genuinely correct translation, not only the expected one: alternative word order, presence or absence of a subject pronoun, valid synonyms, and equivalent forms are all correct. Do NOT mark a correct answer wrong; when in doubt, lean towards correct.
 
-If (and only if) it is genuinely wrong, you MUST explain SPECIFICALLY what is wrong — the exact issue (wrong word choice, wrong tense/form, spelling, missing/extra word, word order) — never a vague comment. Return ONLY valid JSON, no markdown:
+STRICT on the Swedish alphabet: å, ä, ö and é are distinct letters, not accented a/o/e. A missing or wrong diacritic is a different word (e.g. "vara" = to be vs "våra" = our) and MUST be marked incorrect. Capitalization and comma placement that merely differ from English are NOT errors — do not mark them wrong, but do mention the difference briefly in the comment when it occurs (Swedish lowercases weekdays, months, languages and nationalities).
+
+If (and only if) it is genuinely wrong, you MUST explain SPECIFICALLY what is wrong — the exact issue (wrong word choice, wrong tense/form, missing/wrong diacritic, spelling, missing/extra word, word order) — never a vague comment. Return ONLY valid JSON, no markdown:
 {"correct": true or false, "comment": "one short sentence: praise if correct, otherwise the specific reason it's wrong", "your_answer_meaning": "if wrong AND the learner wrote real Swedish, a literal English gloss of what THEY actually wrote (so they see their words vs. the intended meaning); otherwise null"}`;
     try {
       const result = JSON.parse(await callClaude(prompt, 300));

@@ -78,51 +78,60 @@ function byDueThenLeastRecent(today: string) {
   };
 }
 
-// Generate + cache k En->Sv construction sentences for one grammar point,
-// constrained to already-learned vocabulary. Returns the inserted rows (or []).
-async function generateEnToSvSentences(
-  supabase: ReturnType<typeof getServiceClient>,
-  point: any, vocab: any[], k: number, primaryWordId: string | null,
-): Promise<any[]> {
-  if (k <= 0) return [];
-  const vocabList = vocab.map((w: any) => `${w.lemma} (${w.pos})`).join('; ');
-  const prompt = `You are a Swedish tutor generating practice exercises.
-Learner vocabulary: ${vocabList}
-Grammar focus: "${point.title}" — ${point.description}
-Generate exactly ${k} English→Swedish sentence(s) that naturally exercise the grammar focus. Use ONLY the listed vocabulary plus basic function words, keep them simple A1/A2, and make them ORIGINAL (never copy any real text).
-Return ONLY valid JSON, no markdown: { "en_to_sv": [{"sentence_en": "English prompt", "sentence_sv": "correct Swedish"}] }`;
-  let gen: any = {};
-  try { gen = JSON.parse(await callClaude(prompt)); } catch { return []; }
-  const rows = (gen.en_to_sv ?? []).slice(0, k).map((s: any) => ({
-    grammar_point_id: point.id, primary_word_id: primaryWordId,
-    direction: 'en_to_sv', sentence_en: s.sentence_en, sentence_sv: s.sentence_sv,
-  })).filter((r: any) => r.sentence_en && r.sentence_sv);
-  if (!rows.length) return [];
-  const { data } = await supabase.from('generated_sentences').insert(rows).select();
-  return data ?? [];
-}
-
 function normSv(s: string): string {
-  return (s ?? '').toLowerCase().replace(/[^a-zåäöéü\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return (s ?? '').normalize('NFC').toLowerCase().replace(/[^a-zåäöé\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function tokensSv(s: string): string[] {
+  return normSv(s).split(' ').filter(Boolean);
 }
 
+// Closed-class Swedish function words that may appear in a practice sentence
+// even if they aren't in the learned-vocabulary list — the unavoidable glue
+// (pronouns, articles, conjunctions, prepositions, negation, question words).
+// Deliberately EXCLUDES content adverbs/quantifiers like "längre", "mycket",
+// "också" so those must be genuinely learned before they can appear.
+const FUNCTION_WORDS = new Set<string>([
+  // pronouns
+  'jag','du','han','hon','den','det','vi','ni','de','dem','mig','dig','honom','henne','oss','er','sig','man',
+  // possessives / determiners
+  'min','mitt','mina','din','ditt','dina','sin','sitt','sina','hans','hennes','dess','vår','vårt','våra','deras',
+  'en','ett','denna','detta','dessa','någon','något','några','ingen','inget','inga','all','allt','alla','varje','sådan',
+  // conjunctions / subjunctions
+  'och','eller','men','att','som','för','så','om','fast','samt','medan','när','då','eftersom','innan','sedan',
+  // prepositions
+  'i','på','av','till','från','med','under','över','vid','hos','mot','efter','före','utan','genom','mellan','åt','ur','kring','bland','per','trots',
+  // negation / yes-no / basic question words
+  'inte','ej','icke','ja','nej','jo','var','vart','vem','vad','vilken','vilket','vilka','hur','varför',
+]);
+
+type LearnedContext = {
+  // Which already-learned grammar/words/phrases a Swedish sentence uses.
+  matcher: (referenceSv: string, grammarTitle: string | null) => Concepts;
+  // True only if EVERY token is a learned word-form, a learned-phrase token, or
+  // a closed-class function word — the strict "only learned material" gate.
+  sentenceOk: (referenceSv: string) => boolean;
+  // A pool of learned {lemma, pos} to seed generation prompts.
+  wordPool: { lemma: string; pos: string | null }[];
+};
 type Concepts = { grammar: string[]; words: string[]; phrases: string[] };
 
-// Build a deterministic matcher that, given a Swedish sentence, reports which
-// already-learned grammar concept / words / phrases it uses. Purely mechanical
-// (token + substring matching against learned vocab) — no LLM guessing.
-async function buildConceptMatcher(
+// One DB round-trip that yields everything the strict practice/review flow needs:
+// the concepts matcher, the deterministic "only learned material" validator, and
+// a word pool for prompts. All matching is mechanical — no LLM guessing.
+async function buildLearnedContext(
   supabase: ReturnType<typeof getServiceClient>,
-): Promise<(referenceSv: string, grammarTitle: string | null) => Concepts> {
+): Promise<LearnedContext> {
   const [{ data: wp }, { data: ph }] = await Promise.all([
-    supabase.from('user_progress').select('words(lemma, forms)').limit(2000),
+    supabase.from('user_progress').select('last_reviewed_at, words(lemma, pos, forms)').limit(2000),
     supabase.from('vocab_items').select('answer_sv').eq('introduced', true).eq('kind', 'phrase').limit(2000),
   ]);
 
   const formIndex = new Map<string, string>();   // single-token surface form → lemma
+  const wordPool: { lemma: string; pos: string | null; last: string | null }[] = [];
   for (const row of wp ?? []) {
     const w = (row as any).words;
     if (!w?.lemma) continue;
+    wordPool.push({ lemma: w.lemma, pos: w.pos ?? null, last: (row as any).last_reviewed_at ?? null });
     for (const f of wordForms(w)) if (!formIndex.has(f)) formIndex.set(f, w.lemma);
   }
 
@@ -130,18 +139,69 @@ async function buildConceptMatcher(
     .map((text) => ({ text, norm: normSv(text) }))
     .filter((p) => p.norm.includes(' '));         // multi-word phrases only
 
-  return (referenceSv, grammarTitle) => {
-    const norm = normSv(referenceSv);
-    const tokens = new Set(norm.split(' ').filter(Boolean));
+  // Allowed tokens = learned word-forms ∪ learned-phrase component tokens ∪
+  // function words. Anything else in a sentence means it uses unlearned material.
+  const allowed = new Set<string>(FUNCTION_WORDS);
+  for (const f of formIndex.keys()) allowed.add(f);
+  for (const p of phrases) for (const t of p.norm.split(' ')) if (t) allowed.add(t);
+
+  const matcher = (referenceSv: string, grammarTitle: string | null): Concepts => {
+    const toks = new Set(tokensSv(referenceSv));
     const words: string[] = [];
     const seen = new Set<string>();
-    for (const t of tokens) {
+    for (const t of toks) {
       const lemma = formIndex.get(t);
       if (lemma && !seen.has(lemma)) { seen.add(lemma); words.push(lemma); }
     }
+    const norm = normSv(referenceSv);
     const matchedPhrases = phrases.filter((p) => norm.includes(p.norm)).map((p) => p.text);
     return { grammar: grammarTitle ? [grammarTitle] : [], words, phrases: matchedPhrases };
   };
+
+  const sentenceOk = (referenceSv: string): boolean => {
+    const toks = tokensSv(referenceSv);
+    return toks.length > 0 && toks.every((t) => allowed.has(t));
+  };
+
+  return {
+    matcher, sentenceOk,
+    wordPool: wordPool
+      .sort((a, b) => (b.last ?? '').localeCompare(a.last ?? ''))   // recently practiced first
+      .map(({ lemma, pos }) => ({ lemma, pos })),
+  };
+}
+
+// Generate + cache k En->Sv construction sentences for one grammar point,
+// constrained to already-learned vocabulary. `sentenceOk` deterministically
+// rejects any generation that slipped in an unlearned word BEFORE it's cached,
+// so the cache only ever holds sentences that pass the strict rule. Returns the
+// inserted (valid) rows.
+async function generateEnToSvSentences(
+  supabase: ReturnType<typeof getServiceClient>,
+  point: any, vocab: { lemma: string; pos: string | null }[], k: number,
+  primaryWordId: string | null, sentenceOk: (sv: string) => boolean,
+): Promise<any[]> {
+  if (k <= 0) return [];
+  const vocabList = vocab.map((w) => `${w.lemma}${w.pos ? ` (${w.pos})` : ''}`).join('; ');
+  const prompt = `You are a Swedish tutor generating practice exercises.
+The learner has ONLY learned these Swedish words: ${vocabList}
+Grammar focus: "${point.title}" — ${point.description}
+Generate exactly ${k} English→Swedish sentence(s) that naturally exercise the grammar focus. HARD CONSTRAINT: every Swedish word you use MUST be from the learned list above OR a basic closed-class function word (pronouns, en/ett, och, att, som, prepositions like i/på/med, inte, question words). Do NOT use any other content word (no unlisted nouns, verbs, adjectives or adverbs). Keep sentences simple A1/A2 and ORIGINAL (never copy any real text).
+Return ONLY valid JSON, no markdown: { "en_to_sv": [{"sentence_en": "English prompt", "sentence_sv": "correct Swedish"}] }`;
+  let gen: any = {};
+  try { gen = JSON.parse(await callClaude(prompt)); } catch { return []; }
+  const candidates = (gen.en_to_sv ?? [])
+    .filter((s: any) => s?.sentence_en && s?.sentence_sv);
+  const valid = candidates.filter((s: any) => sentenceOk(s.sentence_sv));
+  const dropped = candidates.length - valid.length;
+  if (dropped > 0) console.warn(`[lesson/generate] dropped ${dropped}/${candidates.length} generated sentence(s) using unlearned words (point="${point.title}")`);
+  const rows = valid.slice(0, k).map((s: any) => ({
+    grammar_point_id: point.id, primary_word_id: primaryWordId,
+    direction: 'en_to_sv', sentence_en: s.sentence_en, sentence_sv: s.sentence_sv,
+  }));
+  if (!rows.length) return [];
+  const { data } = await supabase.from('generated_sentences').insert(rows).select();
+  return data ?? [];
 }
 
 export async function POST(req: Request) {
@@ -183,25 +243,40 @@ export async function POST(req: Request) {
     const practiceVocab = (ctx ?? []).map((p: any) => p.words).filter(Boolean);
     const primaryWordId = practiceVocab[0]?.id ?? null;
 
-    // Gather En->Sv sentences across the points — cached first, generate to fill.
+    // Learned-material gate: matcher + sentenceOk validator + a word pool for
+    // prompts. Sentences (cached OR freshly generated) must pass sentenceOk, so
+    // the strict "only learned words/phrases" rule holds regardless of the LLM.
+    const { matcher, sentenceOk, wordPool } = await buildLearnedContext(supabase);
+    const promptVocab = wordPool.slice(0, 60);
+
     const perPoint = Math.max(2, Math.ceil(PRACTICE_TARGET / points.length));
     const collected: { row: any; point: any }[] = [];
     for (const pt of points) {
       if (collected.length >= PRACTICE_TARGET) break;
+      // Pull a wide cached pool and keep only sentences that still obey the rule
+      // (old caches from other flows may use words not yet learned).
       const { data: cached } = await supabase
         .from('generated_sentences').select('*')
         .eq('direction', 'en_to_sv').eq('is_excluded', false).eq('grammar_point_id', pt.id)
         .lt('times_correct', 4)
         .order('last_shown_at', { ascending: true, nullsFirst: true })
-        .limit(perPoint + 2);
-      let rows = cached ?? [];
-      if (rows.length < perPoint) {
-        rows = [...rows, ...await generateEnToSvSentences(supabase, pt, practiceVocab, perPoint - rows.length, primaryWordId)];
+        .limit(30);
+      const rows: any[] = (cached ?? []).filter((r: any) => sentenceOk(r.sentence_sv)).slice(0, perPoint);
+      // Top up by generating (bounded retries) — only valid ones get cached.
+      let attempts = 0;
+      while (rows.length < perPoint && attempts < 3) {
+        attempts++;
+        const gen = await generateEnToSvSentences(supabase, pt, promptVocab, (perPoint - rows.length) + 2, primaryWordId, sentenceOk);
+        if (!gen.length) break;
+        rows.push(...gen.slice(0, perPoint - rows.length));
       }
-      for (const row of rows.slice(0, perPoint)) collected.push({ row, point: pt });
+      for (const row of rows) collected.push({ row, point: pt });
     }
     const chosen = shuffle(collected).slice(0, PRACTICE_TARGET);
     if (!chosen.length) return NextResponse.json({ error: 'generation_failed' }, { status: 502 });
+    if (chosen.length < PRACTICE_TARGET) {
+      console.warn(`[lesson/generate] practice served ${chosen.length}/${PRACTICE_TARGET} sentences — not enough learned material for a full set yet`);
+    }
 
     for (const c of chosen) {
       await supabase.from('generated_sentences')
@@ -209,7 +284,6 @@ export async function POST(req: Request) {
         .eq('id', c.row.id);
     }
 
-    const matcher = await buildConceptMatcher(supabase);
     const en_to_sv = chosen.map((c) => ({
       sentence_id: c.row.id,
       prompt: c.row.sentence_en,
@@ -554,23 +628,27 @@ Return ONLY valid JSON, no markdown: { ${outKeys.join(', ')} }`;
       .sort(byDueThenLeastRecent(today))[0]?.grammar_points ?? null;
 
     if (revPoint) {
+      // Review sentences must obey the same strict "only learned material" rule.
+      const { matcher, sentenceOk, wordPool } = await buildLearnedContext(supabase);
       const { data: cached } = await supabase
         .from('generated_sentences').select('*')
         .eq('direction', 'en_to_sv').eq('is_excluded', false).eq('grammar_point_id', revPoint.id)
         .lt('times_correct', 4)
         .order('last_shown_at', { ascending: true, nullsFirst: true })
-        .limit(REVIEW_N + 2);
-      let rows = (cached ?? []).slice(0, REVIEW_N);
-      if (rows.length < REVIEW_N) {
-        rows = [...rows, ...await generateEnToSvSentences(supabase, revPoint, vocab, REVIEW_N - rows.length, primaryWordId)];
+        .limit(30);
+      const rows: any[] = (cached ?? []).filter((r: any) => sentenceOk(r.sentence_sv)).slice(0, REVIEW_N);
+      let attempts = 0;
+      while (rows.length < REVIEW_N && attempts < 3) {
+        attempts++;
+        const gen = await generateEnToSvSentences(supabase, revPoint, wordPool.slice(0, 60), (REVIEW_N - rows.length) + 1, primaryWordId, sentenceOk);
+        if (!gen.length) break;
+        rows.push(...gen.slice(0, REVIEW_N - rows.length));
       }
-      rows = rows.slice(0, REVIEW_N);
       if (rows.length) {
         for (const r of rows) {
           await supabase.from('generated_sentences')
             .update({ times_shown: (r.times_shown ?? 0) + 1, last_shown_at: now }).eq('id', r.id);
         }
-        const matcher = await buildConceptMatcher(supabase);
         for (const r of rows) {
           exercises.en_to_sv.push({
             sentence_id: r.id, prompt: r.sentence_en, reference: r.sentence_sv,
