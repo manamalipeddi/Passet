@@ -62,6 +62,7 @@ function VocabInner() {
 
   // Done
   const [streak, setStreak] = useState<number | null>(null);
+  const [newRecord, setNewRecord] = useState(false);
 
   useEffect(() => {
     fetch('/api/vocab/session', {
@@ -140,6 +141,7 @@ function VocabInner() {
       body: JSON.stringify({ mode: 'words' }),
     }).then((r) => r.json()).catch(() => ({}));
     setStreak(data.streak ?? null);
+    setNewRecord(!!data.newRecord);
     setStage('done');
   }
 
@@ -304,6 +306,7 @@ function VocabInner() {
         <h2 style={{ marginTop: 10 }}>{mode === 'new' ? 'Snyggt! Vocabulary done.' : 'Nice practice. 💪'}</h2>
         {answered > 0 && <p className="muted">You got {score} of {answered} right ({Math.round((score / answered) * 100)}%).</p>}
         {streak !== null && <p className="muted">🔥 {streak} day{streak === 1 ? '' : 's'} running.</p>}
+        {newRecord && <p style={{ fontWeight: 700, color: 'var(--green)' }}>🏆 New personal best — longest streak yet!</p>}
 
         {mode === 'new' && (
           <div style={{

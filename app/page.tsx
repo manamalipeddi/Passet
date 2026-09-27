@@ -58,7 +58,9 @@ export default async function Home() {
   const grammarStartedPct   = grammarTotal ? Math.round((grammarStartedCount / grammarTotal) * 100) : null;
   const grammarMasteredPct  = grammarStartedCount ? Math.round(((grammarKnown ?? 0) / grammarStartedCount) * 100) : null;
 
-  const streak     = state?.current_streak ?? 0;
+  const streak       = state?.current_streak ?? 0;
+  const longestStreak = state?.longest_streak ?? streak;
+  const atBest       = streak > 0 && streak >= longestStreak;   // tying/holding your record
   const lastVocab   = formatLastSession(state?.last_vocab_at);
   const lastGrammar = formatLastSession(state?.last_grammar_at);
   const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
@@ -118,7 +120,10 @@ export default async function Home() {
       <div className="row2" style={{ marginTop: 18 }}>
         <div className="stat">
           <div className="num">{streak === 0 ? '—' : `🔥 ${streak}`}</div>
-          <div className="lbl">day streak</div>
+          <div className="lbl">
+            day streak<br />
+            🏆 {longestStreak} best{atBest && streak > 1 ? ' · new record!' : ''}
+          </div>
         </div>
         <div className="stat">
           <div className="num">{touched}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {totalWords ?? 0}{startedPct !== null ? ` (${startedPct}%)` : ''}</span></div>

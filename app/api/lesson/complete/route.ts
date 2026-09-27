@@ -76,8 +76,10 @@ export async function POST(req: Request) {
   const { data: state } = await supabase.from('streak_state').select('*').eq('id', 1).single();
   if (!state) return NextResponse.json({ error: 'no_state' }, { status: 500 });
 
+  const prevLongest = state.longest_streak ?? state.current_streak ?? 0;
+
   if (state.last_practiced_date === today) {
-    return NextResponse.json({ streak: state.current_streak, already_done: true, ready_for_new, recent_accuracy, weakest });
+    return NextResponse.json({ streak: state.current_streak, longest: prevLongest, newRecord: false, already_done: true, ready_for_new, recent_accuracy, weakest });
   }
 
   let streak = 1;
@@ -88,10 +90,15 @@ export async function POST(req: Request) {
     streak = gap === 1 ? state.current_streak + 1 : 1;
   }
 
+  // Longest streak only ever grows; a new record is when today's streak passes
+  // the old best (the little "beat your best" payoff).
+  const longest = Math.max(prevLongest, streak);
+  const newRecord = streak > prevLongest;
+
   await supabase
     .from('streak_state')
-    .update({ current_streak: streak, last_practiced_date: today, total_days: state.total_days + 1 })
+    .update({ current_streak: streak, longest_streak: longest, last_practiced_date: today, total_days: state.total_days + 1 })
     .eq('id', 1);
 
-  return NextResponse.json({ streak, already_done: false, ready_for_new, recent_accuracy, weakest });
+  return NextResponse.json({ streak, longest, newRecord, already_done: false, ready_for_new, recent_accuracy, weakest });
 }

@@ -64,6 +64,7 @@ function LessonInner() {
   const [feedback, setFeedback] = useState<any>(null);
   const [checking, setChecking] = useState(false);
   const [streak, setStreak]     = useState<number | null>(null);
+  const [newRecord, setNewRecord] = useState(false);
   const [alreadyDone, setDone]  = useState(false);
   const [readyForNew, setReady] = useState(false);
   const [accuracy, setAccuracy] = useState(0);
@@ -244,6 +245,7 @@ function LessonInner() {
     }
 
     setStreak(data.streak ?? null);
+    setNewRecord(!!data.newRecord);
     setDone(!!data.already_done);
     setReady(!!data.ready_for_new);
     setAccuracy(data.recent_accuracy ?? 0);
@@ -529,6 +531,7 @@ function LessonInner() {
         <span className="tag">{doneTag}</span>
         <h2 style={{ marginTop: 10 }}>{doneHead}</h2>
         {streak !== null && <p className="muted">🔥 {streak} day{streak === 1 ? '' : 's'} running.</p>}
+        {newRecord && <p style={{ fontWeight: 700, color: 'var(--green)' }}>🏆 New personal best — longest streak yet!</p>}
         {readyForNew && (
           <div style={{
             marginTop: 16,
