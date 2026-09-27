@@ -279,19 +279,14 @@ function VocabInner() {
               <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={nextQuiz}>
                 {qi + 1 < seg.items.length ? 'Next' : segIdx + 1 < segments.length ? 'Next phase →' : 'Finish'}
               </button>
-              {canEndPractice && (
+              {/* Stop anywhere past the threshold — but only after answering, and
+                  not on the last item where "Finish" already ends the session. */}
+              {canEndPractice && qi + 1 < seg.items.length && (
                 <button className="btn btn-plain" style={{ marginTop: 10 }} onClick={endPractice}>
                   End practice here ({answered} done) →
                 </button>
               )}
             </>
-          )}
-
-          {/* Before answering, still let a long practice run stop at the 25 mark. */}
-          {!feedback && canEndPractice && (
-            <button className="btn btn-plain" style={{ marginTop: 10 }} onClick={endPractice}>
-              End practice here ({answered} done) →
-            </button>
           )}
         </div>
       </div>
