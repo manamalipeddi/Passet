@@ -10,7 +10,7 @@ type Exercise = {
   grammarPointId?: string | null; grammarTitle?: string | null;
   isReview?: boolean; conceptsUsed?: Concepts | null;
 };
-type CarryItem = { direction: 'en_to_sv' | 'sv_to_en'; prompt: string; reference: string; userAnswer: string; correct: boolean };
+type CarryItem = { direction: 'en_to_sv' | 'sv_to_en'; prompt: string; reference: string; userAnswer: string; correct: boolean; explanation: string };
 // Tense-priming study aid for a grammar-focused En->Sv question (see /api/lesson/variants)
 type TenseForm = { tense: string; en: string; sv: string; isMain?: boolean };
 type NounForm  = { lemma: string; gloss?: string; gender?: string; indefSing?: string; defSing?: string; indefPlural?: string; defPlural?: string };
@@ -188,6 +188,7 @@ function LessonInner() {
           reference:  current.reference,
           userAnswer: answer,
           correct:    !!feedback?.correct,
+          explanation: (feedback?.feedback ?? '').trim(),
         };
       }
       return nextState;
@@ -208,15 +209,16 @@ function LessonInner() {
 
   function composeStudyMessage(items: CarryItem[]) {
     const lines = items.map((it, i) => {
-      const dir = it.direction === 'en_to_sv' ? 'English to Swedish' : 'Swedish to English';
-      const detail = it.correct
-        ? `I translated it correctly as "${it.reference}".`
-        : `I answered "${it.userAnswer || '(left blank)'}", but the correct answer is "${it.reference}".`;
-      return `${i + 1}. Translate ${dir}: "${it.prompt}". ${detail}`;
+      const dir = it.direction === 'en_to_sv' ? 'English→Swedish' : 'Swedish→English';
+      const mine = it.correct
+        ? `My answer (correct): "${it.userAnswer || '(left blank)'}"`
+        : `My answer: "${it.userAnswer || '(left blank)'}"`;
+      const expl = it.explanation ? `\n   What the app told me: "${it.explanation}"` : '';
+      return `${i + 1}. Translate ${dir}: "${it.prompt}"\n   Correct answer: "${it.reference}"\n   ${mine}${expl}`;
     });
-    return `I just finished a practice set and want to understand these sentences better. ` +
-      `For each one below, please explain the grammar simply and give one or two more examples that follow the same pattern.\n\n` +
-      lines.join('\n');
+    return `I just finished a Swedish practice session and flagged these questions to go over with you.\n\n` +
+      `For each one, please: explain the grammar simply, tell me why my answer was right or wrong, and give one or two more examples that follow the same pattern.\n\n` +
+      lines.join('\n\n');
   }
 
   async function finish() {
@@ -388,7 +390,7 @@ function LessonInner() {
 
   if (stage === 'loading') return <div className="wrap"><div className="card">{LOADING_MSG[mode]}</div></div>;
   if (stage === 'error')   return <div className="wrap"><div className="card">Couldn't reach the tutor. Check your connection and try again.</div></div>;
-  if (stage === 'handoff') return <div className="wrap"><div className="card">Saving your flagged questions to the tutor chat…</div></div>;
+  if (stage === 'handoff') return <div className="wrap"><div className="card">Hold on — routing you to the tutor with your flagged questions. This takes a moment…</div></div>;
 
   if (stage === 'vocab') {
     return (
@@ -466,7 +468,7 @@ function LessonInner() {
                 </button>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0 }}>
                   <input type="checkbox" checked={!!carryover[idx]} onChange={toggleCarryover} />
-                  Study this in chat
+                  Ask the tutor
                 </label>
               </div>
 
@@ -490,7 +492,7 @@ function LessonInner() {
                   {idx + 1 < exercises.length
                     ? 'Next'
                     : Object.keys(carryover).length > 0
-                      ? 'Finish & study in chat →'
+                      ? 'Finish & send to tutor →'
                       : (mode === 'daily' ? 'Finish today' : 'Finish')}
                 </button>
                 {current.sentence_id && (

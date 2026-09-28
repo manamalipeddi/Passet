@@ -15,6 +15,11 @@ type Feedback = {
   correct: boolean; comment: string; corrected: string;
   userAnswerMeaning: string | null; mastered: boolean;
 };
+// A question flagged to forward to the tutor at the end of the session.
+type CarryItem = {
+  prompt: string; label: string | null; correctAnswer: string;
+  userAnswer: string; correct: boolean; explanation: string;
+};
 type SegKind = 'drill' | 'review' | 'practice';
 type Segment = { kind: SegKind; items: QuizItem[] };
 
@@ -42,7 +47,7 @@ function VocabInner() {
   const mode: 'new' | 'review' | 'practice' =
     params.get('mode') === 'review' ? 'review' : params.get('mode') === 'practice' ? 'practice' : 'new';
 
-  const [stage, setStage] = useState<'loading' | 'intro' | 'quiz' | 'done' | 'error'>('loading');
+  const [stage, setStage] = useState<'loading' | 'intro' | 'quiz' | 'routing' | 'done' | 'error'>('loading');
   const [intro, setIntro] = useState<IntroItem[]>([]);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [meta, setMeta] = useState<{ introducedNow: number; dailyTargetMet: boolean }>({ introducedNow: 0, dailyTargetMet: false });
@@ -59,6 +64,9 @@ function VocabInner() {
   const [checking, setChecking] = useState(false);
   const [answered, setAnswered] = useState(0);   // graded answers this session (for score + practice cap)
   const [score, setScore] = useState(0);
+
+  // Questions flagged to forward to the tutor, keyed by "<segIdx>-<qi>".
+  const [carryover, setCarryover] = useState<Record<string, CarryItem>>({});
 
   // Done
   const [streak, setStreak] = useState<number | null>(null);
@@ -133,13 +141,64 @@ function VocabInner() {
     }
   }
 
+  // Flag / unflag the current answered item to forward to the tutor.
+  function toggleCarryover() {
+    const item = seg.items[qi];
+    const key = `${segIdx}-${qi}`;
+    setCarryover((prev) => {
+      const next = { ...prev };
+      if (next[key]) delete next[key];
+      else next[key] = {
+        prompt: item.prompt,
+        label: item.label,
+        correctAnswer: feedback?.corrected ?? '',
+        userAnswer: answer,
+        correct: !!feedback?.correct,
+        explanation: (feedback?.comment ?? '').trim(),
+      };
+      return next;
+    });
+  }
+
+  // Build the message sent to the tutor: for each flagged item, the whole
+  // question, the correct answer, my answer, the app's explanation, and an
+  // up-front note telling the tutor what to do with them.
+  function composeStudyMessage(items: CarryItem[]) {
+    const lines = items.map((it, i) => {
+      const mine = it.correct
+        ? `My answer (correct): "${it.userAnswer || '(left blank)'}"`
+        : `My answer: "${it.userAnswer || '(left blank)'}"`;
+      const expl = it.explanation ? `\n   What the app told me: "${it.explanation}"` : '';
+      return `${i + 1}. Translate to Swedish: "${it.prompt}"${it.label ? ` (${it.label})` : ''}\n   Correct answer: "${it.correctAnswer}"\n   ${mine}${expl}`;
+    });
+    return `I just finished a Swedish vocabulary practice session and flagged these words/phrases to go over with you.\n\n` +
+      `For each one, please: explain what it means and how it's used, tell me why my answer was right or wrong, and give one or two more example sentences using it.\n\n` +
+      lines.join('\n\n');
+  }
+
   async function complete() {
+    const flagged = Object.values(carryover);
+    if (flagged.length) setStage('routing');
+
     // Vocab always completes as a 'words' session (updates the vocab streak/last-seen).
     const data = await fetch('/api/lesson/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'words' }),
     }).then((r) => r.json()).catch(() => ({}));
+
+    // Anything flagged goes to the tutor chat, then we jump there. The chat
+    // route saves the question before calling the tutor, so it's never lost.
+    if (flagged.length) {
+      await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: composeStudyMessage(flagged) }),
+      }).catch(() => {});
+      window.location.assign('/chat');
+      return;
+    }
+
     setStreak(data.streak ?? null);
     setNewRecord(!!data.newRecord);
     setStage('done');
@@ -160,9 +219,10 @@ function VocabInner() {
     await complete();
   }
 
-  // ── LOADING / ERROR ──────────────────────────────────────────────────────
+  // ── LOADING / ERROR / ROUTING ────────────────────────────────────────────
   if (stage === 'loading') return <div className="wrap"><div className="card">{mode === 'new' ? "Putting today's words together…" : 'Pulling your practice together…'}</div></div>;
   if (stage === 'error')   return <div className="wrap"><div className="card">Couldn't load your words. Check your connection and try again.</div></div>;
+  if (stage === 'routing') return <div className="wrap"><div className="card">Hold on — routing you to the tutor with your flagged words. This takes a moment…</div></div>;
 
   // ── INTRO PHASE (new flow) ───────────────────────────────────────────────
   if (stage === 'intro') {
@@ -276,8 +336,17 @@ function VocabInner() {
                 </div>
               )}
 
+              {/* Flag this word to forward to the tutor at the end of the session. */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', fontWeight: 600, marginTop: 12 }}>
+                <input type="checkbox" checked={!!carryover[`${segIdx}-${qi}`]} onChange={toggleCarryover} />
+                Ask the tutor about this
+              </label>
+
               <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={nextQuiz}>
-                {qi + 1 < seg.items.length ? 'Next' : segIdx + 1 < segments.length ? 'Next phase →' : 'Finish'}
+                {qi + 1 < seg.items.length ? 'Next'
+                  : segIdx + 1 < segments.length ? 'Next phase →'
+                  : Object.keys(carryover).length > 0 ? 'Finish & send to tutor →'
+                  : 'Finish'}
               </button>
               {/* Stop anywhere past the threshold — but only after answering, and
                   not on the last item where "Finish" already ends the session. */}
