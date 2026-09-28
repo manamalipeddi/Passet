@@ -10,7 +10,7 @@ type Exercise = {
   grammarPointId?: string | null; grammarTitle?: string | null;
   isReview?: boolean; conceptsUsed?: Concepts | null;
 };
-type CarryItem = { direction: 'en_to_sv' | 'sv_to_en'; prompt: string; reference: string; userAnswer: string; correct: boolean; explanation: string };
+type CarryItem = { direction: 'en_to_sv' | 'sv_to_en'; prompt: string; reference: string; userAnswer: string; correct: boolean; explanation: string; note: string };
 // Tense-priming study aid for a grammar-focused En->Sv question (see /api/lesson/variants)
 type TenseForm = { tense: string; en: string; sv: string; isMain?: boolean };
 type NounForm  = { lemma: string; gloss?: string; gender?: string; indefSing?: string; defSing?: string; indefPlural?: string; defPlural?: string };
@@ -189,10 +189,16 @@ function LessonInner() {
           userAnswer: answer,
           correct:    !!feedback?.correct,
           explanation: (feedback?.feedback ?? '').trim(),
+          note:       '',
         };
       }
       return nextState;
     });
+  }
+
+  // Update the typed question/doubt for a flagged item.
+  function setCarryoverNote(key: number, note: string) {
+    setCarryover((prev) => (prev[key] ? { ...prev, [key]: { ...prev[key], note } } : prev));
   }
 
   function excludeAndNext() {
@@ -214,10 +220,11 @@ function LessonInner() {
         ? `My answer (correct): "${it.userAnswer || '(left blank)'}"`
         : `My answer: "${it.userAnswer || '(left blank)'}"`;
       const expl = it.explanation ? `\n   What the app told me: "${it.explanation}"` : '';
-      return `${i + 1}. Translate ${dir}: "${it.prompt}"\n   Correct answer: "${it.reference}"\n   ${mine}${expl}`;
+      const q = it.note?.trim() ? `\n   My question: ${it.note.trim()}` : '';
+      return `${i + 1}. Translate ${dir}: "${it.prompt}"\n   Correct answer: "${it.reference}"\n   ${mine}${expl}${q}`;
     });
     return `I just finished a Swedish practice session and flagged these questions to go over with you.\n\n` +
-      `For each one, please: explain the grammar simply, tell me why my answer was right or wrong, and give one or two more examples that follow the same pattern.\n\n` +
+      `Where I wrote "My question", answer that directly. Otherwise, explain the grammar simply, tell me why my answer was right or wrong, and give one or two more examples that follow the same pattern.\n\n` +
       lines.join('\n\n');
   }
 
@@ -471,6 +478,16 @@ function LessonInner() {
                   Ask the tutor
                 </label>
               </div>
+
+              {/* Type the specific doubt to send with this question. */}
+              {carryover[idx] && (
+                <textarea
+                  value={carryover[idx].note}
+                  onChange={(e) => setCarryoverNote(idx, e.target.value)}
+                  placeholder="What do you want to ask the tutor about this? (optional)"
+                  style={{ marginTop: 10 }}
+                />
+              )}
 
               {explanation && (
                 <div style={{

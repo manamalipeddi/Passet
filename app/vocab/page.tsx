@@ -18,7 +18,7 @@ type Feedback = {
 // A question flagged to forward to the tutor at the end of the session.
 type CarryItem = {
   prompt: string; label: string | null; correctAnswer: string;
-  userAnswer: string; correct: boolean; explanation: string;
+  userAnswer: string; correct: boolean; explanation: string; note: string;
 };
 type SegKind = 'drill' | 'review' | 'practice';
 type Segment = { kind: SegKind; items: QuizItem[] };
@@ -155,9 +155,15 @@ function VocabInner() {
         userAnswer: answer,
         correct: !!feedback?.correct,
         explanation: (feedback?.comment ?? '').trim(),
+        note: '',
       };
       return next;
     });
+  }
+
+  // Update the typed question/doubt for a flagged item.
+  function setCarryoverNote(key: string, note: string) {
+    setCarryover((prev) => (prev[key] ? { ...prev, [key]: { ...prev[key], note } } : prev));
   }
 
   // Build the message sent to the tutor: for each flagged item, the whole
@@ -169,10 +175,11 @@ function VocabInner() {
         ? `My answer (correct): "${it.userAnswer || '(left blank)'}"`
         : `My answer: "${it.userAnswer || '(left blank)'}"`;
       const expl = it.explanation ? `\n   What the app told me: "${it.explanation}"` : '';
-      return `${i + 1}. Translate to Swedish: "${it.prompt}"${it.label ? ` (${it.label})` : ''}\n   Correct answer: "${it.correctAnswer}"\n   ${mine}${expl}`;
+      const q = it.note?.trim() ? `\n   My question: ${it.note.trim()}` : '';
+      return `${i + 1}. Translate to Swedish: "${it.prompt}"${it.label ? ` (${it.label})` : ''}\n   Correct answer: "${it.correctAnswer}"\n   ${mine}${expl}${q}`;
     });
     return `I just finished a Swedish vocabulary practice session and flagged these words/phrases to go over with you.\n\n` +
-      `For each one, please: explain what it means and how it's used, tell me why my answer was right or wrong, and give one or two more example sentences using it.\n\n` +
+      `Where I wrote "My question", answer that directly. Otherwise, explain what it means and how it's used, why my answer was right or wrong, and give one or two more example sentences using it.\n\n` +
       lines.join('\n\n');
   }
 
@@ -336,11 +343,19 @@ function VocabInner() {
                 </div>
               )}
 
-              {/* Flag this word to forward to the tutor at the end of the session. */}
+              {/* Flag this word to forward to the tutor, with your own question. */}
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', fontWeight: 600, marginTop: 12 }}>
                 <input type="checkbox" checked={!!carryover[`${segIdx}-${qi}`]} onChange={toggleCarryover} />
                 Ask the tutor about this
               </label>
+              {carryover[`${segIdx}-${qi}`] && (
+                <textarea
+                  value={carryover[`${segIdx}-${qi}`].note}
+                  onChange={(e) => setCarryoverNote(`${segIdx}-${qi}`, e.target.value)}
+                  placeholder="What do you want to ask the tutor about this? (optional)"
+                  style={{ marginTop: 8 }}
+                />
+              )}
 
               <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={nextQuiz}>
                 {qi + 1 < seg.items.length ? 'Next'
