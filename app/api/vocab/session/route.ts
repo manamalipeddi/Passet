@@ -32,14 +32,15 @@ const BUFFER_MIN     = 20;   // below this, the client is told to top up the buf
 
 const ITEM_SELECT = '*, words!inner(rank, source, lemma, pos, gender, translation)';
 
-// Hardest-first: absolute misses, then wrong-rate, then oldest due date.
-function byHardest(a: any, b: any): number {
-  const aw = a.times_wrong ?? 0, bw = b.times_wrong ?? 0;
-  if (bw !== aw) return bw - aw;
-  const aRate = aw / ((a.times_correct ?? 0) + aw || 1);
-  const bRate = bw / ((b.times_correct ?? 0) + bw || 1);
-  if (bRate !== aRate) return bRate - aRate;
-  return (a.next_review_date ?? '9999') < (b.next_review_date ?? '9999') ? -1 : 1;
+// Review order (the owner's rule): items missed MORE THAN TWICE IN A ROW lead,
+// then everything else by soonest SRS review date (oldest due first). The
+// consecutive-wrong streak lives on vocab_items.wrong_streak.
+function byReviewPriority(a: any, b: any): number {
+  const aHard = (a.wrong_streak ?? 0) > 2 ? 0 : 1;
+  const bHard = (b.wrong_streak ?? 0) > 2 ? 0 : 1;
+  if (aHard !== bHard) return aHard - bHard;
+  const ad = a.next_review_date ?? '9999', bd = b.next_review_date ?? '9999';
+  return ad < bd ? -1 : ad > bd ? 1 : 0;
 }
 
 export async function POST(req: Request) {
@@ -116,7 +117,7 @@ export async function POST(req: Request) {
   if (promoteIds.length) dueQ = dueQ.not('id', 'in', `(${promoteIds.join(',')})`);
   const { data: dueRows } = await dueQ;
   const promoteIdSet = new Set(promoteIds);
-  let review = (dueRows ?? []).filter((r: any) => !promoteIdSet.has(r.id)).sort(byHardest).slice(0, target);
+  let review = (dueRows ?? []).filter((r: any) => !promoteIdSet.has(r.id)).sort(byReviewPriority).slice(0, target);
 
   // If not enough is due, top up with the least-recently-seen introduced items
   // (this is also what keeps a practice/review session from ever running empty).

@@ -124,6 +124,9 @@ If (and only if) it is genuinely wrong, you MUST explain SPECIFICALLY what is wr
   const isPhrase = (item.answer_sv ?? '').trim().split(/\s+/).filter(Boolean).length >= 2;
   const newTimesCorrect = (item.times_correct ?? 0) + (correct ? 1 : 0);
   const itemMastered = newTimesCorrect >= (isPhrase ? MASTER_PHRASE : MASTER_SINGLE);
+  // Consecutive-wrong streak: grows on a miss, resets on a correct answer.
+  // Review ordering surfaces items missed more than twice in a row first.
+  const newWrongStreak = correct ? 0 : (item.wrong_streak ?? 0) + 1;
 
   let sched = updateSrs(item, correct);
   if (correct && itemMastered && sched.interval_days < MATURE_DAYS) {
@@ -139,6 +142,7 @@ If (and only if) it is genuinely wrong, you MUST explain SPECIFICALLY what is wr
       last_reviewed_at: new Date().toISOString(),
       times_correct: newTimesCorrect,
       times_wrong: (item.times_wrong ?? 0) + (correct ? 0 : 1),
+      wrong_streak: newWrongStreak,
     })
     .eq('id', itemId);
 

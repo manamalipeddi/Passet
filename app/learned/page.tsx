@@ -20,6 +20,19 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
     wq,
     supabase.from('words').select('id').eq('source', 'user_added'),
   ]);
+  // Real review schedule lives per-item on vocab_items; the word-level
+  // next_review_date is frozen at introduction and misleading. Show the soonest
+  // upcoming item due date for each word; fall back to the word-level date only
+  // for legacy words that were never expanded into items.
+  const { data: viRows } = await supabase
+    .from('vocab_items').select('word_id, next_review_date').eq('introduced', true);
+  const soonestItemDue = new Map<string, string>();
+  for (const vi of (viRows ?? [])) {
+    if (!vi.next_review_date) continue;
+    const cur = soonestItemDue.get(vi.word_id);
+    if (!cur || vi.next_review_date < cur) soonestItemDue.set(vi.word_id, vi.next_review_date);
+  }
+
   const heardIds = new Set((uaRows ?? []).map((w: any) => w.id));
   const allWords = (wordRows ?? [])
     .filter((r: any) => r.words)
@@ -96,7 +109,7 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
 
         <div style={{ marginTop: 12 }}>
           {words.length === 0 && <p className="muted">No words match this filter.</p>}
-          {words.map((r: any) => <WordRow key={r.word_id} r={r} />)}
+          {words.map((r: any) => <WordRow key={r.word_id} r={r} due={soonestItemDue.get(r.word_id) ?? r.next_review_date} />)}
         </div>
       </details>
 
@@ -111,7 +124,7 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
                 : 'No heard words match this filter.'}
             </p>
           ) : (
-            heardWords.map((r: any) => <WordRow key={r.word_id} r={r} />)
+            heardWords.map((r: any) => <WordRow key={r.word_id} r={r} due={soonestItemDue.get(r.word_id) ?? r.next_review_date} />)
           )}
         </div>
       </details>
@@ -119,10 +132,10 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
   );
 }
 
-function WordRow({ r }: { r: any }) {
+function WordRow({ r, due: dueIso }: { r: any; due: string | null }) {
   const w   = r.words;
-  const due = r.next_review_date
-    ? new Date(r.next_review_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+  const due = dueIso
+    ? new Date(dueIso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
     : '—';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1.5px dashed var(--line)' }}>
