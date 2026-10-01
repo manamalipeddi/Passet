@@ -32,13 +32,22 @@ const BUFFER_MIN     = 20;   // below this, the client is told to top up the buf
 
 const ITEM_SELECT = '*, words!inner(rank, source, lemma, pos, gender, translation)';
 
-// Review order (the owner's rule): items missed MORE THAN TWICE IN A ROW lead,
-// then everything else by soonest SRS review date (oldest due first). The
-// consecutive-wrong streak lives on vocab_items.wrong_streak.
+// Review order (the owner's rule). SRS frequency already handles how OFTEN an
+// item reappears; this decides what LEADS within a session:
+//   1. actively failing — missed 2+ times in a row (vocab_items.wrong_streak),
+//   2. then miss-rate (wrong ÷ attempts), highest first — self-correcting, so
+//      conquered items fall back down instead of being pinned forever,
+//   3. then soonest SRS review date (oldest due first).
+function missRate(x: any): number {
+  const c = x.times_correct ?? 0, w = x.times_wrong ?? 0;
+  return (c + w) ? w / (c + w) : 0;
+}
 function byReviewPriority(a: any, b: any): number {
-  const aHard = (a.wrong_streak ?? 0) > 2 ? 0 : 1;
-  const bHard = (b.wrong_streak ?? 0) > 2 ? 0 : 1;
-  if (aHard !== bHard) return aHard - bHard;
+  const aHot = (a.wrong_streak ?? 0) >= 2 ? 0 : 1;
+  const bHot = (b.wrong_streak ?? 0) >= 2 ? 0 : 1;
+  if (aHot !== bHot) return aHot - bHot;
+  const ar = missRate(a), br = missRate(b);
+  if (br !== ar) return br - ar;
   const ad = a.next_review_date ?? '9999', bd = b.next_review_date ?? '9999';
   return ad < bd ? -1 : ad > bd ? 1 : 0;
 }
