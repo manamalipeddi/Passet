@@ -1,28 +1,35 @@
 'use client';
 import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 
 // The dashboard is force-dynamic, but the browser keeps the rendered page around
-// after you navigate away: Chrome's back/forward cache restores it on a back
-// gesture, and an installed PWA keeps it alive in the background. Either way the
-// streak and progress stats can appear frozen after a practice session. Reload
-// to pull fresh numbers when the page is revived from that cache, or brought
-// back to the foreground after being hidden long enough to be a new visit.
+// after you navigate away: the client router may serve a cached copy, Chrome's
+// back/forward cache restores it on a back gesture, and an installed PWA keeps
+// it alive in the background. Any of these can leave the streak, last-session
+// and accuracy numbers frozen after a practice session.
+//
+// So we pull fresh data whenever the dashboard appears:
+//   • on mount — router.refresh() re-runs the server component with fresh DB
+//     reads (fixes a stale client-router copy on return from a session),
+//   • on back/forward-cache restore — a hard reload for certainty,
+//   • on returning to the foreground — soft refresh, or hard reload if it was
+//     backgrounded long enough to plausibly be a new visit.
 // Scoped to the dashboard so it never interrupts a live lesson.
 export default function RefreshOnRestore() {
+  const router = useRouter();
   useEffect(() => {
-    // Revived from the back/forward cache (back-gesture navigation).
+    router.refresh();
+
     const onShow = (e: PageTransitionEvent) => {
       if (e.persisted) window.location.reload();
     };
-    // Reopened after the PWA/tab was backgrounded. Only reload if it was hidden
-    // long enough to plausibly be a new session, so quick app switches don't
-    // trigger a jarring refresh.
     let hiddenAt: number | null = null;
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') {
         hiddenAt = Date.now();
-      } else if (hiddenAt && Date.now() - hiddenAt > 10_000) {
-        window.location.reload();
+      } else if (document.visibilityState === 'visible') {
+        if (hiddenAt && Date.now() - hiddenAt > 10_000) window.location.reload();
+        else router.refresh();
       }
     };
     window.addEventListener('pageshow', onShow);
@@ -31,6 +38,6 @@ export default function RefreshOnRestore() {
       window.removeEventListener('pageshow', onShow);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, []);
+  }, [router]);
   return null;
 }

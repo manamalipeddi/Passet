@@ -36,7 +36,7 @@ export default async function Home() {
     supabase.from('words').select('*', { count: 'exact', head: true }),
     supabase.from('grammar_points').select('*', { count: 'exact', head: true }),
     supabase.from('user_grammar_progress').select('*', { count: 'exact', head: true }).eq('status', 'known'),
-    supabase.from('attempts').select('*').order('created_at', { ascending: false }).limit(60),
+    supabase.from('attempts').select('*').order('created_at', { ascending: false }).limit(150),
     supabase.from('user_grammar_progress').select('grammar_point_id'),
     supabase.from('user_progress').select('word_id, times_correct, times_wrong, words(id, lemma, translation, pos)'),
     supabase.from('user_grammar_progress').select('grammar_point_id, times_correct, times_wrong, grammar_points(id, title)'),
@@ -63,7 +63,8 @@ export default async function Home() {
   const atBest       = streak > 0 && streak >= longestStreak;   // tying/holding your record
   const lastVocab   = formatLastSession(state?.last_vocab_at);
   const lastGrammar = formatLastSession(state?.last_grammar_at);
-  const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+  // Stable per day so a soft refresh (see RefreshOnRestore) doesn't flicker it.
+  const greeting = GREETINGS[new Date().getDate() % GREETINGS.length];
 
   // Worth a second look — wrong answers from the last 3 practice sessions,
   // deduped to just the prompt line. Sessions aren't stored, so we cluster
@@ -85,6 +86,40 @@ export default async function Home() {
     seenWrong.add(key);
     secondLook.push(a);
   }
+
+  // Practice accuracy — average of the last 3 sessions' accuracy per track, with
+  // today's (this) session in brackets. Sessions reuse the 30-min-gap clustering
+  // above; vocab attempts carry no grammar_point_ids, grammar attempts do.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  function sessionStats(isGrammar: boolean): { avg: number | null; today: number | null } {
+    const track = (recent ?? []).filter((a: any) => {
+      const hasGp = (a.grammar_point_ids?.length ?? 0) > 0;
+      return isGrammar ? hasGp : !hasGp;
+    });
+    const sessions: { correct: number; total: number; t: number }[] = [];
+    let prevT: number | null = null;
+    for (const a of track) {                       // newest-first
+      const t = new Date(a.created_at).getTime();
+      if (prevT === null || prevT - t > SESSION_GAP_MS) sessions.push({ correct: 0, total: 0, t });
+      const cur = sessions[sessions.length - 1];
+      cur.total++;
+      if (a.is_correct) cur.correct++;
+      prevT = t;
+    }
+    const last3 = sessions.slice(0, 3);
+    const avg = last3.length
+      ? Math.round((last3.reduce((s, x) => s + x.correct / x.total, 0) / last3.length) * 100)
+      : null;
+    const latest = sessions[0];
+    const today = latest && new Date(latest.t).toISOString().slice(0, 10) === todayStr
+      ? Math.round((latest.correct / latest.total) * 100)
+      : null;
+    return { avg, today };
+  }
+  const vocabAcc = sessionStats(false);
+  const grammarAcc = sessionStats(true);
+  const fmtAcc = (a: { avg: number | null; today: number | null }) =>
+    a.avg == null ? '—' : `${a.avg}%${a.today != null ? ` (${a.today}%)` : ''}`;
 
   // Trouble spots — grammar points and words ranked by accuracy (worst first).
   // Only things gotten wrong at least WRONG_THRESHOLD times; accuracy from tallies.
@@ -133,12 +168,15 @@ export default async function Home() {
 
       <div className="row2" style={{ marginTop: 14 }}>
         <div className="stat">
-          <div className="num">{grammarStartedCount}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {grammarTotal ?? 0}{grammarStartedPct !== null ? ` (${grammarStartedPct}%)` : ''}</span></div>
-          <div className="lbl">grammar started<br />{grammarKnown ?? 0}{grammarMasteredPct !== null ? ` (${grammarMasteredPct}%)` : ''} mastered</div>
+          <div className="num" style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.45 }}>
+            <div>Vocab {fmtAcc(vocabAcc)}</div>
+            <div>Grammar {fmtAcc(grammarAcc)}</div>
+          </div>
+          <div className="lbl">avg accuracy · last 3 sessions<br />this session in ( )</div>
         </div>
         <div className="stat">
-          <div className="num">{known ?? 0}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> + {grammarKnown ?? 0}</span></div>
-          <div className="lbl">mastered so far<br />words + grammar</div>
+          <div className="num">{grammarStartedCount}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {grammarTotal ?? 0}{grammarStartedPct !== null ? ` (${grammarStartedPct}%)` : ''}</span></div>
+          <div className="lbl">grammar started<br />{grammarKnown ?? 0}{grammarMasteredPct !== null ? ` (${grammarMasteredPct}%)` : ''} mastered</div>
         </div>
       </div>
 
