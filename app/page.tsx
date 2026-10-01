@@ -224,35 +224,46 @@ export default async function Home() {
         )}
       </details>
 
-      {/* PRACTICE: no new concepts — reinforce what's already been learned */}
-      <details className="card sec" style={{ marginTop: 18 }} open>
-        <summary><span className="tag" style={{ background: 'var(--mustard)', color: 'var(--ink)' }}>practice</span></summary>
+      {/* PRACTICE: no new concepts — reinforce what's already been learned.
+          Mustard hero with a green shadow: a clear, warm counterpart to the green
+          Learn card (and its mustard shadow), so the two never blur together and
+          neither blends into the white cards. Red buttons to distinguish from
+          Learn's gold ones. */}
+      <details className="sec" style={{
+        background: 'var(--mustard)',
+        border: '3px solid var(--mustard)',
+        borderRadius: 16,
+        padding: '26px 24px',
+        marginTop: 18,
+        boxShadow: '7px 7px 0 var(--green)',
+      }} open>
+        <summary><span className="tag" style={{ background: 'var(--green)', color: '#FAF3E7' }}>practice</span></summary>
 
         {/* Vocabulary practice — up to 50 due/weak words, stoppable at 25 */}
         <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, lineHeight: 1.3 }}>
           Practice vocabulary
         </p>
-        <p className="muted" style={{ margin: '0 0 12px', fontSize: 12 }}>
+        <p style={{ margin: '0 0 14px', fontSize: 12, color: 'rgba(36,21,17,0.65)' }}>
           Up to 50 words you already know, hardest first · stop at 25 anytime
         </p>
         <a href="/vocab?mode=practice">
-          <button className="btn btn-secondary">Practice vocabulary →</button>
+          <button className="btn btn-primary">Practice vocabulary →</button>
         </a>
 
-        <div style={{ height: 20, borderTop: '1.5px dashed var(--ink)', marginTop: 20, opacity: 0.25 }} />
+        <div style={{ height: 22, borderTop: '1.5px dashed rgba(36,21,17,0.3)', marginTop: 22 }} />
 
         {/* Grammar practice — 10 sentence constructions from learned material, stop at 6 */}
         <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: 18, lineHeight: 1.3 }}>
           Practice grammar
         </p>
-        <p className="muted" style={{ margin: '0 0 12px', fontSize: 12 }}>
+        <p style={{ margin: '0 0 14px', fontSize: 12, color: 'rgba(36,21,17,0.65)' }}>
           {hasGrammar
             ? '10 sentence constructions from what you’ve learned · stop after 6'
             : 'Learn a grammar point first to unlock practice'}
         </p>
         {hasGrammar ? (
           <a href="/lesson?mode=practice">
-            <button className="btn btn-secondary">Practice grammar →</button>
+            <button className="btn btn-primary">Practice grammar →</button>
           </a>
         ) : (
           <a href="/lesson?mode=learn">
