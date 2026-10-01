@@ -33,10 +33,17 @@ export default async function Learned({ searchParams }: { searchParams?: { filte
     if (!cur || vi.next_review_date < cur) soonestItemDue.set(vi.word_id, vi.next_review_date);
   }
 
+  // Sort by soonest review due first (most overdue → soonest → furthest out, so
+  // mastered words sitting weeks away sink to the bottom), lemma as a tiebreak.
+  const dueOf = (r: any) => soonestItemDue.get(r.word_id) ?? r.next_review_date ?? '9999-12-31';
   const heardIds = new Set((uaRows ?? []).map((w: any) => w.id));
   const allWords = (wordRows ?? [])
     .filter((r: any) => r.words)
-    .sort((a: any, b: any) => a.words.lemma.localeCompare(b.words.lemma, 'sv'));
+    .sort((a: any, b: any) => {
+      const da = dueOf(a), db = dueOf(b);
+      if (da !== db) return da < db ? -1 : 1;
+      return a.words.lemma.localeCompare(b.words.lemma, 'sv');
+    });
   const words      = allWords.filter((r: any) => !heardIds.has(r.word_id));
   const heardWords = allWords.filter((r: any) =>  heardIds.has(r.word_id));
 
