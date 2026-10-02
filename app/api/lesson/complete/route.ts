@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/supabase';
 import { READY_FOR_NEW } from '@/lib/config';
 
-const PRACTICE_MODES = ['words', 'grammar', 'extra', 'practice'];
+const PRACTICE_MODES = ['words', 'grammar', 'extra', 'practice', 'listen'];
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
@@ -16,10 +16,12 @@ export async function POST(req: Request) {
   // read; last_vocab_at / last_grammar_at track each side separately (the vocab
   // flow completes with mode='words', everything else is grammar practice).
   const nowIso = new Date().toISOString();
-  const trackField = mode === 'words' ? 'last_vocab_at' : 'last_grammar_at';
-  await supabase.from('streak_state')
-    .update({ last_session_at: nowIso, [trackField]: nowIso })
-    .eq('id', 1);
+  // 'words' is the vocab flow, 'listen' is dictation (its own skill — don't
+  // clobber either track's "last session"), everything else is grammar.
+  const trackField = mode === 'words' ? 'last_vocab_at' : mode === 'listen' ? null : 'last_grammar_at';
+  const stamp: Record<string, string> = { last_session_at: nowIso };
+  if (trackField) stamp[trackField] = nowIso;
+  await supabase.from('streak_state').update(stamp).eq('id', 1);
 
   // After a strong run of practice, nudge toward new material.
   let ready_for_new = false;

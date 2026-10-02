@@ -188,6 +188,41 @@ export default async function Home() {
         )}
       </details>
 
+      {/* LISTEN: dictation — a red hero, the third distinct colour after the
+          green Learn and mustard Practice cards. Needs learned material to
+          generate sentences, so it unlocks alongside grammar practice. */}
+      <details className="sec" style={{
+        background: 'var(--red)',
+        border: '3px solid var(--red)',
+        borderRadius: 16,
+        padding: '26px 24px',
+        marginTop: 18,
+        boxShadow: '7px 7px 0 var(--mustard)',
+      }} open>
+        <summary><span className="tag" style={{ background: 'var(--mustard)', color: 'var(--ink)' }}>listen</span></summary>
+        <p style={{ margin: '14px 0 4px', fontWeight: 700, fontSize: 18, color: '#FAF3E7', lineHeight: 1.3 }}>
+          Listening practice
+        </p>
+        <p style={{ margin: '0 0 14px', fontSize: 12, color: 'rgba(250,243,231,0.6)' }}>
+          {hasGrammar
+            ? 'Hear a sentence, write what was said · 10, stop after 6'
+            : 'Learn a grammar point first to unlock listening'}
+        </p>
+        {hasGrammar ? (
+          <a href="/listen">
+            <button className="btn btn-secondary" style={{ boxShadow: '4px 4px 0 rgba(250,243,231,0.15)' }}>
+              Start listening →
+            </button>
+          </a>
+        ) : (
+          <a href="/lesson?mode=learn">
+            <button className="btn btn-secondary" style={{ boxShadow: '4px 4px 0 rgba(250,243,231,0.15)' }}>
+              Learn your first grammar point →
+            </button>
+          </a>
+        )}
+      </details>
+
       <details className="card sec" style={{ marginTop: 18 }} open>
         <summary><span className="tag">heard a word?</span></summary>
         <HearAWord />
