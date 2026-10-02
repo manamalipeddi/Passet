@@ -7,7 +7,7 @@ import { formatLastSession } from '@/lib/relativeTime';
 
 const SESSION_GAP_MS = 30 * 60 * 1000;
 
-export type Acc = { avg: number | null };
+export type Acc = { avg: number | null; today: number | null };
 export type HomeStats = {
   lastVocab: string;
   lastGrammar: string;
@@ -67,15 +67,16 @@ export async function computeHomeStats(
   // Accuracy — average of the last 3 sessions per track. Three tracks: listening
   // attempts are tagged direction='listen'; of the rest, grammar attempts carry
   // grammar_point_ids and vocab attempts don't.
+  const todayStr = new Date().toISOString().slice(0, 10);
   const classify = (a: any): 'vocab' | 'grammar' | 'listen' =>
     a.direction === 'listen' ? 'listen' : ((a.grammar_point_ids?.length ?? 0) > 0 ? 'grammar' : 'vocab');
   const sessionStats = (kind: 'vocab' | 'grammar' | 'listen'): Acc => {
     const track = (recent ?? []).filter((a: any) => classify(a) === kind);
-    const sessions: { correct: number; total: number }[] = [];
+    const sessions: { correct: number; total: number; t: number }[] = [];
     let prevT: number | null = null;
     for (const a of track) {
       const t = new Date(a.created_at).getTime();
-      if (prevT === null || prevT - t > SESSION_GAP_MS) sessions.push({ correct: 0, total: 0 });
+      if (prevT === null || prevT - t > SESSION_GAP_MS) sessions.push({ correct: 0, total: 0, t });
       const cur = sessions[sessions.length - 1];
       cur.total++;
       if (a.is_correct) cur.correct++;
@@ -85,7 +86,11 @@ export async function computeHomeStats(
     const avg = last3.length
       ? Math.round((last3.reduce((s, x) => s + x.correct / x.total, 0) / last3.length) * 100)
       : null;
-    return { avg };
+    const latest = sessions[0];
+    const today = latest && new Date(latest.t).toISOString().slice(0, 10) === todayStr
+      ? Math.round((latest.correct / latest.total) * 100)
+      : null;
+    return { avg, today };
   };
 
   return {
