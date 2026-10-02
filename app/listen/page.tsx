@@ -27,6 +27,7 @@ export default function ListenPage() {
   const [heard, setHeard] = useState('');
   const [eng, setEng] = useState('');
   const [feedback, setFeedback] = useState<{ correct: boolean } | null>(null);
+  const [gloss, setGloss] = useState<string | 'loading' | null>(null);   // English meaning of what you wrote (wrong answers)
   const [answered, setAnswered] = useState(0);
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState<number | null>(null);
@@ -77,6 +78,18 @@ export default function ListenPage() {
     setFeedback({ correct });
     setAnswered((n) => n + 1);
     if (correct) setScore((s) => s + 1);
+    // On a miss, show what the learner's Swedish actually means (not an echo).
+    if (!correct && heard.trim()) {
+      setGloss('loading');
+      fetch('/api/listen/gloss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: heard }),
+      })
+        .then((r) => r.json())
+        .then((d) => setGloss(d?.gloss ?? null))
+        .catch(() => setGloss(null));
+    }
   }
 
   async function complete() {
@@ -92,6 +105,7 @@ export default function ListenPage() {
 
   function next() {
     setFeedback(null);
+    setGloss(null);
     setHeard('');
     setEng('');
     if (idx + 1 < items.length) { setIdx(idx + 1); return; }
@@ -181,8 +195,11 @@ export default function ListenPage() {
                   <div style={{ marginTop: 10, borderTop: '1.5px dashed var(--ink)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {!feedback.correct && heard.trim() && (
                       <div>
-                        <div className="eyebrow">You wrote</div>
-                        <div style={{ fontStyle: 'italic' }}>{heard}</div>
+                        <div className="eyebrow">You wrote — meaning</div>
+                        <div style={{ fontStyle: 'italic' }}>
+                          {heard}
+                          {gloss === 'loading' ? ' — …' : gloss ? ` — “${gloss}”` : ''}
+                        </div>
                       </div>
                     )}
                     <div>
