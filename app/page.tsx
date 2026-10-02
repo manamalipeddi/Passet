@@ -1,7 +1,8 @@
 import { getServiceClient } from '@/lib/supabase';
-import { formatLastSession } from '@/lib/relativeTime';
+import { computeHomeStats } from '@/lib/homeStats';
 import HearAWord from './components/HearAWord';
 import RefreshOnRestore from './components/RefreshOnRestore';
+import DashboardStats from './components/DashboardStats';
 
 const GREETINGS = [
   'Hej Manasa! Välkommen tillbaka.',
@@ -19,23 +20,13 @@ export default async function Home() {
   const supabase = getServiceClient();
 
   const [
-    { data: state },
-    { count: learning },
-    { count: known },
-    { count: totalWords },
-    { count: grammarTotal },
-    { count: grammarKnown },
+    stats,
     { data: recent },
     { data: startedGpRows },
     { data: wordProgRows },
     { data: grammarProgRows },
   ] = await Promise.all([
-    supabase.from('streak_state').select('*').eq('id', 1).single(),
-    supabase.from('user_progress').select('*', { count: 'exact', head: true }).eq('status', 'learning'),
-    supabase.from('user_progress').select('*', { count: 'exact', head: true }).eq('status', 'known'),
-    supabase.from('words').select('*', { count: 'exact', head: true }),
-    supabase.from('grammar_points').select('*', { count: 'exact', head: true }),
-    supabase.from('user_grammar_progress').select('*', { count: 'exact', head: true }).eq('status', 'known'),
+    computeHomeStats(supabase),
     supabase.from('attempts').select('*').order('created_at', { ascending: false }).limit(150),
     supabase.from('user_grammar_progress').select('grammar_point_id'),
     supabase.from('user_progress').select('word_id, times_correct, times_wrong, words(id, lemma, translation, pos)'),
@@ -49,21 +40,7 @@ export default async function Home() {
   const { data: nextGpData } = await nextGpQ;
   const nextGrammar = nextGpData?.[0] ?? null;
 
-  const touched    = (learning ?? 0) + (known ?? 0);
-  const startedPct  = totalWords ? Math.round((touched / totalWords) * 100) : null;
-  const masteredPct = touched ? Math.round(((known ?? 0) / touched) * 100) : null;
-
-  // Grammar progress — mirrors the words stat (started over total, mastered over started).
-  const grammarStartedCount = (startedGpRows ?? []).length;
-  const grammarStartedPct   = grammarTotal ? Math.round((grammarStartedCount / grammarTotal) * 100) : null;
-  const grammarMasteredPct  = grammarStartedCount ? Math.round(((grammarKnown ?? 0) / grammarStartedCount) * 100) : null;
-
-  const streak       = state?.current_streak ?? 0;
-  const longestStreak = state?.longest_streak ?? streak;
-  const atBest       = streak > 0 && streak >= longestStreak;   // tying/holding your record
-  const lastVocab   = formatLastSession(state?.last_vocab_at);
-  const lastGrammar = formatLastSession(state?.last_grammar_at);
-  // Stable per day so a soft refresh (see RefreshOnRestore) doesn't flicker it.
+  // Stable per day so re-renders don't flicker it.
   const greeting = GREETINGS[new Date().getDate() % GREETINGS.length];
 
   // Worth a second look — wrong answers from the last 3 practice sessions,
@@ -87,40 +64,6 @@ export default async function Home() {
     secondLook.push(a);
   }
 
-  // Practice accuracy — average of the last 3 sessions' accuracy per track, with
-  // today's (this) session in brackets. Sessions reuse the 30-min-gap clustering
-  // above; vocab attempts carry no grammar_point_ids, grammar attempts do.
-  const todayStr = new Date().toISOString().slice(0, 10);
-  function sessionStats(isGrammar: boolean): { avg: number | null; today: number | null } {
-    const track = (recent ?? []).filter((a: any) => {
-      const hasGp = (a.grammar_point_ids?.length ?? 0) > 0;
-      return isGrammar ? hasGp : !hasGp;
-    });
-    const sessions: { correct: number; total: number; t: number }[] = [];
-    let prevT: number | null = null;
-    for (const a of track) {                       // newest-first
-      const t = new Date(a.created_at).getTime();
-      if (prevT === null || prevT - t > SESSION_GAP_MS) sessions.push({ correct: 0, total: 0, t });
-      const cur = sessions[sessions.length - 1];
-      cur.total++;
-      if (a.is_correct) cur.correct++;
-      prevT = t;
-    }
-    const last3 = sessions.slice(0, 3);
-    const avg = last3.length
-      ? Math.round((last3.reduce((s, x) => s + x.correct / x.total, 0) / last3.length) * 100)
-      : null;
-    const latest = sessions[0];
-    const today = latest && new Date(latest.t).toISOString().slice(0, 10) === todayStr
-      ? Math.round((latest.correct / latest.total) * 100)
-      : null;
-    return { avg, today };
-  }
-  const vocabAcc = sessionStats(false);
-  const grammarAcc = sessionStats(true);
-  const fmtAcc = (a: { avg: number | null; today: number | null }) =>
-    a.avg == null ? '—' : `${a.avg}%${a.today != null ? ` (${a.today}%)` : ''}`;
-
   // Trouble spots — grammar points and words ranked by accuracy (worst first).
   // Only things gotten wrong at least WRONG_THRESHOLD times; accuracy from tallies.
   const WRONG_THRESHOLD = 2;
@@ -142,43 +85,16 @@ export default async function Home() {
     .slice(0, 10);
 
   // Grammar practice only unlocks once at least one point has been introduced.
-  const hasGrammar = grammarStartedCount > 0;
+  const hasGrammar = stats.grammarStartedCount > 0;
 
   return (
     <div className="wrap">
       <RefreshOnRestore />
       <h1 style={{ fontSize: 26, lineHeight: 1.3, margin: 0 }}>{greeting}</h1>
-      <p className="muted" style={{ margin: '6px 0 0', fontSize: 13 }}>
-        Last vocab: {lastVocab}<br />Last grammar: {lastGrammar}
-      </p>
 
-      <div className="row2" style={{ marginTop: 18 }}>
-        <div className="stat">
-          <div className="num">{streak === 0 ? '—' : `🔥 ${streak}`}</div>
-          <div className="lbl">
-            day streak<br />
-            🏆 {longestStreak} best{atBest && streak > 1 ? ' · new record!' : ''}
-          </div>
-        </div>
-        <div className="stat">
-          <div className="num">{touched}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {totalWords ?? 0}{startedPct !== null ? ` (${startedPct}%)` : ''}</span></div>
-          <div className="lbl">words started<br />{known ?? 0}{masteredPct !== null ? ` (${masteredPct}%)` : ''} mastered</div>
-        </div>
-      </div>
-
-      <div className="row2" style={{ marginTop: 14 }}>
-        <div className="stat">
-          <div className="num" style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.45 }}>
-            <div>Vocab {fmtAcc(vocabAcc)}</div>
-            <div>Grammar {fmtAcc(grammarAcc)}</div>
-          </div>
-          <div className="lbl">avg accuracy · last 3 sessions<br />this session in ( )</div>
-        </div>
-        <div className="stat">
-          <div className="num">{grammarStartedCount}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {grammarTotal ?? 0}{grammarStartedPct !== null ? ` (${grammarStartedPct}%)` : ''}</span></div>
-          <div className="lbl">grammar started<br />{grammarKnown ?? 0}{grammarMasteredPct !== null ? ` (${grammarMasteredPct}%)` : ''} mastered</div>
-        </div>
-      </div>
+      {/* Streak / last-session / accuracy / progress — self-refreshing so it
+          always reflects the session you just finished (see DashboardStats). */}
+      <DashboardStats initial={stats} />
 
       {/* Hero — LEARN: introduce new concepts (with a little built-in review) */}
       <details className="sec hero-green" style={{

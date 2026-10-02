@@ -383,7 +383,14 @@ function VocabInner() {
       <div className="card" style={{ textAlign: 'center' }}>
         <span className="tag">done</span>
         <h2 style={{ marginTop: 10 }}>{mode === 'new' ? 'Snyggt! Vocabulary done.' : 'Nice practice. 💪'}</h2>
-        {answered > 0 && <p className="muted">You got {score} of {answered} right ({Math.round((score / answered) * 100)}%).</p>}
+        {answered > 0 && (
+          <div style={{ margin: '12px 0 6px' }}>
+            <div style={{ fontFamily: "'Space Grotesk',sans-serif", fontSize: 40, fontWeight: 700, color: 'var(--red)', lineHeight: 1 }}>
+              {Math.round((score / answered) * 100)}%
+            </div>
+            <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>{score} of {answered} right this session</div>
+          </div>
+        )}
         {streak !== null && <p className="muted">🔥 {streak} day{streak === 1 ? '' : 's'} running.</p>}
         {newRecord && <p style={{ fontWeight: 700, color: 'var(--green)' }}>🏆 New personal best — longest streak yet!</p>}
 
