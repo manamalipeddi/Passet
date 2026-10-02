@@ -7,7 +7,7 @@ import { formatLastSession } from '@/lib/relativeTime';
 
 const SESSION_GAP_MS = 30 * 60 * 1000;
 
-export type Acc = { avg: number | null; today: number | null };
+export type Acc = { avg: number | null };
 export type HomeStats = {
   lastVocab: string;
   lastGrammar: string;
@@ -26,6 +26,7 @@ export type HomeStats = {
   grammarMasteredPct: number | null;
   vocabAcc: Acc;
   grammarAcc: Acc;
+  listenAcc: Acc;
 };
 
 export async function computeHomeStats(
@@ -47,7 +48,7 @@ export async function computeHomeStats(
     supabase.from('words').select('*', { count: 'exact', head: true }),
     supabase.from('grammar_points').select('*', { count: 'exact', head: true }),
     supabase.from('user_grammar_progress').select('*', { count: 'exact', head: true }).eq('status', 'known'),
-    supabase.from('attempts').select('created_at, is_correct, grammar_point_ids').order('created_at', { ascending: false }).limit(150),
+    supabase.from('attempts').select('created_at, is_correct, grammar_point_ids, direction').order('created_at', { ascending: false }).limit(150),
     supabase.from('user_grammar_progress').select('grammar_point_id'),
   ]);
 
@@ -63,19 +64,18 @@ export async function computeHomeStats(
   const longestStreak = state?.longest_streak ?? streak;
   const atBest = streak > 0 && streak >= longestStreak;
 
-  // Accuracy — average of the last 3 sessions per track, today's session in
-  // brackets. Vocab attempts carry no grammar_point_ids, grammar attempts do.
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const sessionStats = (isGrammar: boolean): Acc => {
-    const track = (recent ?? []).filter((a: any) => {
-      const hasGp = (a.grammar_point_ids?.length ?? 0) > 0;
-      return isGrammar ? hasGp : !hasGp;
-    });
-    const sessions: { correct: number; total: number; t: number }[] = [];
+  // Accuracy — average of the last 3 sessions per track. Three tracks: listening
+  // attempts are tagged direction='listen'; of the rest, grammar attempts carry
+  // grammar_point_ids and vocab attempts don't.
+  const classify = (a: any): 'vocab' | 'grammar' | 'listen' =>
+    a.direction === 'listen' ? 'listen' : ((a.grammar_point_ids?.length ?? 0) > 0 ? 'grammar' : 'vocab');
+  const sessionStats = (kind: 'vocab' | 'grammar' | 'listen'): Acc => {
+    const track = (recent ?? []).filter((a: any) => classify(a) === kind);
+    const sessions: { correct: number; total: number }[] = [];
     let prevT: number | null = null;
     for (const a of track) {
       const t = new Date(a.created_at).getTime();
-      if (prevT === null || prevT - t > SESSION_GAP_MS) sessions.push({ correct: 0, total: 0, t });
+      if (prevT === null || prevT - t > SESSION_GAP_MS) sessions.push({ correct: 0, total: 0 });
       const cur = sessions[sessions.length - 1];
       cur.total++;
       if (a.is_correct) cur.correct++;
@@ -85,11 +85,7 @@ export async function computeHomeStats(
     const avg = last3.length
       ? Math.round((last3.reduce((s, x) => s + x.correct / x.total, 0) / last3.length) * 100)
       : null;
-    const latest = sessions[0];
-    const today = latest && new Date(latest.t).toISOString().slice(0, 10) === todayStr
-      ? Math.round((latest.correct / latest.total) * 100)
-      : null;
-    return { avg, today };
+    return { avg };
   };
 
   return {
@@ -108,7 +104,8 @@ export async function computeHomeStats(
     grammarStartedPct,
     grammarKnown: grammarKnown ?? 0,
     grammarMasteredPct,
-    vocabAcc: sessionStats(false),
-    grammarAcc: sessionStats(true),
+    vocabAcc: sessionStats('vocab'),
+    grammarAcc: sessionStats('grammar'),
+    listenAcc: sessionStats('listen'),
   };
 }

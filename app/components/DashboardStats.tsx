@@ -7,7 +7,7 @@ import type { HomeStats, Acc } from '@/lib/homeStats';
 // dashboard is shown (mount, tab focus, app resume). This is what guarantees the
 // numbers reflect a session you just finished — no page reload or cache-busting
 // needed, because it's an explicit no-store fetch each time.
-const fmtAcc = (a: Acc) => (a.avg == null ? '—' : `${a.avg}%${a.today != null ? ` (${a.today}%)` : ''}`);
+const fmtAcc = (a: Acc) => (a.avg == null ? '—' : `${a.avg}%`);
 
 export default function DashboardStats({ initial }: { initial: HomeStats }) {
   const [s, setS] = useState<HomeStats>(initial);
@@ -53,11 +53,12 @@ export default function DashboardStats({ initial }: { initial: HomeStats }) {
 
       <div className="row2" style={{ marginTop: 14 }}>
         <div className="stat">
-          <div className="num" style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.45 }}>
+          <div className="num" style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.4 }}>
             <div>Vocab {fmtAcc(s.vocabAcc)}</div>
             <div>Grammar {fmtAcc(s.grammarAcc)}</div>
+            <div>Listening {fmtAcc(s.listenAcc)}</div>
           </div>
-          <div className="lbl">avg accuracy · last 3 sessions<br />this session in ( )</div>
+          <div className="lbl">avg accuracy · last 3 sessions</div>
         </div>
         <div className="stat">
           <div className="num">{s.grammarStartedCount}<span style={{ fontSize: 16, color: 'var(--text-muted)' }}> / {s.grammarTotal}{s.grammarStartedPct !== null ? ` (${s.grammarStartedPct}%)` : ''}</span></div>

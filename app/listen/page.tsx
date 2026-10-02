@@ -78,18 +78,17 @@ export default function ListenPage() {
     setFeedback({ correct });
     setAnswered((n) => n + 1);
     if (correct) setScore((s) => s + 1);
-    // On a miss, show what the learner's Swedish actually means (not an echo).
-    if (!correct && heard.trim()) {
-      setGloss('loading');
-      fetch('/api/listen/gloss', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: heard }),
-      })
-        .then((r) => r.json())
-        .then((d) => setGloss(d?.gloss ?? null))
-        .catch(() => setGloss(null));
-    }
+    if (!correct && heard.trim()) setGloss('loading');
+    // Record the attempt (its own 'listen' accuracy track) and, on a miss, get
+    // the English meaning of what the learner actually wrote.
+    fetch('/api/listen/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userAnswer: heard, sentenceSv: item.reference, sentenceEn: item.prompt, correct }),
+    })
+      .then((r) => r.json())
+      .then((d) => setGloss(d?.gloss ?? null))
+      .catch(() => setGloss(null));
   }
 
   async function complete() {
