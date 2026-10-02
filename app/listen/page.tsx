@@ -32,12 +32,14 @@ export default function ListenPage() {
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState<number | null>(null);
   const spokenOnce = useRef(false);
+  const [preparing, setPreparing] = useState(false);
+  const audioCache = useRef<Map<string, string>>(new Map());   // `${slow?1:0}|${text}` → base64 mp3
+  const audioEl = useRef<HTMLAudioElement | null>(null);
 
-  const supported = typeof window !== 'undefined' && 'speechSynthesis' in window;
+  const deviceSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
 
   useEffect(() => {
-    // Nudge the voice list to load (some engines populate it lazily).
-    if (supported) window.speechSynthesis.getVoices();
+    if (deviceSupported) window.speechSynthesis.getVoices();   // warm device voices (fallback)
     fetch('/api/lesson/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -54,11 +56,50 @@ export default function ListenPage() {
         setStage('practice');
       })
       .catch(() => setStage('error'));
-    return () => { if (supported) window.speechSynthesis.cancel(); };
-  }, [supported]);
+    return () => stopAudio();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  function speak(text: string, rate = 0.9) {
-    if (!supported) return;
+  const item = items[idx];
+
+  // Warm the audio cache for the current sentence so the Play tap plays
+  // instantly (and synchronously within the gesture — mobile requires that).
+  useEffect(() => {
+    if (stage === 'practice' && item?.reference) fetchAudio(item.reference, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, idx, item?.reference]);
+
+  async function fetchAudio(text: string, slow: boolean): Promise<string | null> {
+    const ck = `${slow ? 1 : 0}|${text}`;
+    const hit = audioCache.current.get(ck);
+    if (hit) return hit;
+    try {
+      const r = await fetch('/api/listen/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, slow }),
+      });
+      if (!r.ok) return null;
+      const d = await r.json();
+      if (d?.audio) { audioCache.current.set(ck, d.audio); return d.audio; }
+    } catch { /* fall through to device voice */ }
+    return null;
+  }
+
+  function stopAudio() {
+    if (audioEl.current) { audioEl.current.pause(); audioEl.current = null; }
+    if (deviceSupported) window.speechSynthesis.cancel();
+  }
+
+  function playBase64(b64: string) {
+    const a = new Audio('data:audio/mpeg;base64,' + b64);
+    audioEl.current = a;
+    spokenOnce.current = true;
+    a.play().catch(() => {});
+  }
+
+  function deviceSpeak(text: string, rate: number) {
+    if (!deviceSupported) return;
     const synth = window.speechSynthesis;
     synth.cancel();
     const u = new SpeechSynthesisUtterance(text);
@@ -70,7 +111,18 @@ export default function ListenPage() {
     synth.speak(u);
   }
 
-  const item = items[idx];
+  // Prefer the cloud (Google) voice; fall back to the device voice if it's not
+  // configured or the call fails, so listening always works.
+  async function speak(text: string, slow = false) {
+    stopAudio();
+    const cached = audioCache.current.get(`${slow ? 1 : 0}|${text}`);
+    if (cached) { playBase64(cached); return; }   // synchronous → stays inside the tap gesture
+    setPreparing(true);
+    const b64 = await fetchAudio(text, slow);
+    setPreparing(false);
+    if (b64) playBase64(b64);
+    else deviceSpeak(text, slow ? 0.6 : 0.9);
+  }
 
   function check() {
     if (!item) return;
@@ -92,7 +144,7 @@ export default function ListenPage() {
   }
 
   async function complete() {
-    if (supported) window.speechSynthesis.cancel();
+    stopAudio();
     const data = await fetch('/api/lesson/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -103,6 +155,7 @@ export default function ListenPage() {
   }
 
   function next() {
+    stopAudio();
     setFeedback(null);
     setGloss(null);
     setHeard('');
@@ -150,16 +203,13 @@ export default function ListenPage() {
       <span className="tag" style={{ background: 'var(--red)', color: '#fff' }}>listening</span>
       <span className="pill" style={{ marginLeft: 8 }}>{idx + 1} of {items.length}</span>
       <div className="card">
-        {!supported ? (
-          <p>Your browser doesn’t support speech playback. Try Chrome on your phone.</p>
-        ) : (
-          <>
+        <>
             <p className="muted" style={{ marginTop: 0 }}>Listen, then write the Swedish you hear.</p>
             <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn btn-primary" style={{ width: 'auto', padding: '12px 20px' }} onClick={() => speak(item.reference)}>
-                {spokenOnce.current ? '▶ Play again' : '▶ Play'}
+              <button className="btn btn-primary" style={{ width: 'auto', padding: '12px 20px' }} onClick={() => speak(item.reference)} disabled={preparing}>
+                {preparing ? '…' : spokenOnce.current ? '▶ Play again' : '▶ Play'}
               </button>
-              <button className="btn btn-plain" style={{ width: 'auto', padding: '12px 16px' }} onClick={() => speak(item.reference, 0.6)}>
+              <button className="btn btn-plain" style={{ width: 'auto', padding: '12px 16px' }} onClick={() => speak(item.reference, true)} disabled={preparing}>
                 🐢 Slower
               </button>
             </div>
@@ -223,8 +273,7 @@ export default function ListenPage() {
                 )}
               </>
             )}
-          </>
-        )}
+        </>
       </div>
     </div>
   );
