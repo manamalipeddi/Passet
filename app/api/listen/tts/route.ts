@@ -8,8 +8,21 @@ import { getServiceClient } from '@/lib/supabase';
 // is missing or the call fails, responds with an error and the client falls back
 // to the device voice, so listening keeps working.
 
-const VOICE = 'sv-SE-Wavenet-A';   // native Swedish WaveNet voice
 const LANG = 'sv-SE';
+// A mix of Google's newest high-definition Swedish voices. Pick one per sentence
+// by hashing the text, so each sentence has a stable voice (cache-friendly,
+// consistent on replay) while the set as a whole varies across sentences.
+const VOICES = [
+  'sv-SE-Chirp3-HD-Gacrux',
+  'sv-SE-Chirp3-HD-Aoede',
+  'sv-SE-Chirp3-HD-Alnilam',
+  'sv-SE-Chirp3-HD-Fenrir',
+];
+function pickVoice(text: string): string {
+  let h = 0;
+  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
+  return VOICES[h % VOICES.length];
+}
 
 export async function POST(req: Request) {
   const { text, slow } = await req.json().catch(() => ({}));
@@ -20,7 +33,8 @@ export async function POST(req: Request) {
   if (!apiKey) return NextResponse.json({ error: 'tts_unconfigured' }, { status: 503 });
 
   const speakingRate = slow ? 0.7 : 1.0;
-  const cacheKey = `${VOICE}|${speakingRate}|${t}`;
+  const voice = pickVoice(t);
+  const cacheKey = `${voice}|${speakingRate}|${t}`;
   const supabase = getServiceClient();
 
   const { data: cached } = await supabase
@@ -34,7 +48,7 @@ export async function POST(req: Request) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         input: { text: t },
-        voice: { languageCode: LANG, name: VOICE },
+        voice: { languageCode: LANG, name: voice },
         audioConfig: { audioEncoding: 'MP3', speakingRate },
       }),
     });
