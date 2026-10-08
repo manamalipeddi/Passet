@@ -7,7 +7,7 @@ import type { HomeStats, Acc } from '@/lib/homeStats';
 // dashboard is shown (mount, tab focus, app resume). This is what guarantees the
 // numbers reflect a session you just finished — no page reload or cache-busting
 // needed, because it's an explicit no-store fetch each time.
-const fmtAcc = (a: Acc) => (a.avg == null ? '—' : `${a.avg}%${a.today != null ? ` (${a.today}%)` : ''}`);
+const fmtAcc = (a: Acc) => (a.avg == null ? '—' : `${a.avg}%${a.latest != null ? ` (${a.latest}%)` : ''}`);
 
 export default function DashboardStats({ initial }: { initial: HomeStats }) {
   const [s, setS] = useState<HomeStats>(initial);

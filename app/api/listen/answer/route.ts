@@ -11,7 +11,7 @@ export async function POST(req: Request) {
   const supabase = getServiceClient();
   const ua = (userAnswer ?? '').trim();
 
-  await supabase.from('attempts').insert({
+  const { error: insErr } = await supabase.from('attempts').insert({
     direction: 'listen',
     prompt_text: sentenceSv ?? '',
     target_text: sentenceSv ?? '',
@@ -21,6 +21,7 @@ export async function POST(req: Request) {
     word_ids: [],
     grammar_point_ids: [],
   });
+  if (insErr) console.error('[listen/answer] failed to record attempt:', insErr.message);
 
   if (correct || !ua) return NextResponse.json({ gloss: null });
 
