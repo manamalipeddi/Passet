@@ -35,6 +35,52 @@ type WordInput = {
   translation: string | null; forms: any;
 };
 
+// Second, independent pass: before anything is saved, have the model check each
+// generated item's Swedish against its English prompt and either confirm it,
+// correct it, or drop it. Catches the collocation/preposition and hallucinated-
+// form errors a single generation pass lets through (e.g. "talk to" → "prata
+// till" should be "prata med"; a bogus "har skolat"). Conservative by design:
+// only changes an item when it's genuinely wrong, so it can't mangle good ones.
+// On any failure it returns the rows untouched — never blocks generation.
+async function verifyItems(word: WordInput, rows: any[]): Promise<any[]> {
+  if (!rows.length) return rows;
+  const list = rows.map((r, i) => `${i + 1}. [${r.kind}] English:"${r.prompt_en}" Swedish:"${r.answer_sv}"`).join('\n');
+  const prompt = `You are a strict native Swedish teacher checking auto-generated flashcards for the word "${word.lemma}" (means "${word.translation ?? ''}"). For EACH item decide whether the Swedish is a correct, natural rendering of the English a native speaker would actually say — prepositions and collocations must be right (e.g. "talk to" = "prata med", NOT "prata till"), inflected forms must be real, word order natural.
+Be conservative: if the Swedish is acceptable, mark it ok — only flag genuinely wrong or unnatural items. When flagging, give the correct Swedish in "fix", or an empty "fix" if the item is bogus / doesn't apply and should be dropped.
+Items:
+${list}
+Return ONLY a JSON array, same order, no markdown:
+[{"i":1,"ok":true},{"i":2,"ok":false,"fix":"correct Swedish or empty string"}]`;
+
+  let verdicts: any[];
+  try {
+    verdicts = parseArray(await callClaude(prompt, 1200, 'claude-haiku-4-5-20251001'));
+  } catch (err) {
+    console.error('[vocabItems] verify failed for', word.lemma, err);
+    return rows;   // don't block on a verifier hiccup
+  }
+  if (!verdicts.length) return rows;
+
+  const byIndex = new Map(verdicts.map((v: any) => [Number(v?.i), v]));
+  const out: any[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const v = byIndex.get(i + 1);
+    if (!v || v.ok) { out.push(rows[i]); continue; }
+    const fix = String(v.fix ?? '').trim();
+    if (fix && fix.toLowerCase() !== String(rows[i].answer_sv).toLowerCase()) {
+      // Corrected — clear the stale note/example (they described the old answer).
+      out.push({ ...rows[i], answer_sv: fix, note: null, example: null });
+      console.warn(`[vocabItems] corrected ${word.lemma}: "${rows[i].prompt_en}" ${rows[i].answer_sv} → ${fix}`);
+    } else if (!fix) {
+      console.warn(`[vocabItems] dropped bad item for ${word.lemma}: "${rows[i].prompt_en}" → "${rows[i].answer_sv}"`);
+      // drop
+    } else {
+      out.push(rows[i]);   // flagged but fix == current answer → keep
+    }
+  }
+  return out;
+}
+
 export async function generateItemsForWord(
   supabase: any,
   word: WordInput,
@@ -112,10 +158,14 @@ Return ONLY a JSON array, no markdown:
 
   if (!rows.length) return 0;
 
+  // Verify everything before it's cached — correct or drop wrong Swedish.
+  const verified = await verifyItems(word, rows);
+  if (!verified.length) return 0;
+
   // Ignore rows that clash with an existing (word_id, prompt_en) so re-runs are safe.
   const { data, error } = await supabase
     .from('vocab_items')
-    .upsert(rows, { onConflict: 'word_id,prompt_en', ignoreDuplicates: true })
+    .upsert(verified, { onConflict: 'word_id,prompt_en', ignoreDuplicates: true })
     .select('id');
   if (error) { console.error('[vocabItems] insert failed for', word.lemma, error.message); return 0; }
   return data?.length ?? 0;
