@@ -7,9 +7,20 @@ import { callClaude } from '@/lib/anthropic';
 // verbatim echo). Attempts are tagged direction='listen' so they form their own
 // accuracy track, separate from vocab and grammar.
 export async function POST(req: Request) {
-  const { userAnswer, sentenceSv, sentenceEn, correct } = await req.json().catch(() => ({}));
+  const { sentenceId, userAnswer, sentenceSv, sentenceEn, correct } = await req.json().catch(() => ({}));
   const supabase = getServiceClient();
   const ua = (userAnswer ?? '').trim();
+
+  // Non-SRS retirement: two correct in a row retires the sentence; a miss resets.
+  if (sentenceId) {
+    const { data: s } = await supabase
+      .from('listening_sentences').select('correct_streak').eq('id', sentenceId).maybeSingle();
+    if (s) {
+      await supabase.from('listening_sentences')
+        .update({ correct_streak: correct ? (s.correct_streak ?? 0) + 1 : 0 })
+        .eq('id', sentenceId);
+    }
+  }
 
   const { error: insErr } = await supabase.from('attempts').insert({
     direction: 'listen',

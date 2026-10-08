@@ -1,12 +1,13 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 
-// Listening / dictation: a Swedish sentence (same pool as grammar practice) is
-// spoken aloud via the browser's built-in text-to-speech. You type what you
-// heard (graded — deterministic, diacritics strict) and, optionally, the English
-// translation (never graded). 10 sentences, stoppable after 6.
+// Listening / dictation: a Swedish sentence from the dedicated listening pool
+// (built from already-learned vocabulary, NOT spaced repetition) is spoken aloud
+// via Google TTS. You type what you heard (graded — deterministic, diacritics
+// strict) and, optionally, the English translation (never graded). 10 sentences,
+// stoppable after 6. Getting a sentence right twice in a row retires it.
 
-type Item = { sentence_id?: string; prompt: string; reference: string };  // prompt=English, reference=Swedish
+type Item = { id: string; prompt: string; reference: string };  // prompt=English, reference=Swedish
 const STOP_AFTER = 6;
 const TOTAL = 10;
 
@@ -40,16 +41,12 @@ export default function ListenPage() {
 
   useEffect(() => {
     if (deviceSupported) window.speechSynthesis.getVoices();   // warm device voices (fallback)
-    fetch('/api/lesson/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'practice' }),
-    })
+    fetch('/api/listen/session', { method: 'POST' })
       .then((r) => r.json())
       .then((data) => {
         if (data.error) { setStage('error'); return; }
-        const sv: Item[] = (data?.exercises?.en_to_sv ?? [])
-          .map((e: any) => ({ sentence_id: e.sentence_id, prompt: e.prompt, reference: e.reference }))
+        const sv: Item[] = (data?.sentences ?? [])
+          .map((e: any) => ({ id: e.id, prompt: e.sentence_en, reference: e.sentence_sv }))
           .filter((e: Item) => e.reference);
         if (!sv.length) { setStage('error'); return; }
         setItems(sv.slice(0, TOTAL));
@@ -136,7 +133,7 @@ export default function ListenPage() {
     fetch('/api/listen/answer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userAnswer: heard, sentenceSv: item.reference, sentenceEn: item.prompt, correct }),
+      body: JSON.stringify({ sentenceId: item.id, userAnswer: heard, sentenceSv: item.reference, sentenceEn: item.prompt, correct }),
     })
       .then((r) => r.json())
       .then((d) => setGloss(d?.gloss ?? null))
